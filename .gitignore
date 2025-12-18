@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# Google Cloud
+.gcloudignore
+
+# Mac
+.DS_Store
+
+# Large files
+*.pdf
+
+# Scripts Temporary/Test Artifacts
+scripts/*.json
+temp_cleanup/
