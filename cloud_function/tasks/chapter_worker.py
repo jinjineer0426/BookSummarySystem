@@ -30,8 +30,14 @@ def process_chapter(request):
     }
     """
     try:
+        # Debug logging
+        print(f"Chapter Process Request: method={request.method}, path={request.path}")
+        # print(f"Headers: {dict(request.headers)}") 
+        
         request_json = request.get_json(silent=True)
         if not request_json:
+            print("Error: No JSON payload found for chapter worker.")
+            print(f"Raw Data: {request.get_data(as_text=True)[:500]}")
             return json.dumps({"error": "No payload"}), 400
         
         job_id = request_json.get("job_id")
@@ -40,6 +46,7 @@ def process_chapter(request):
         existing_concepts = request_json.get("existing_concepts", [])
         
         if job_id is None or chapter_number is None:
+            print(f"Error: job_id or chapter_number missing. Keys: {request_json.keys()}")
             return json.dumps({"error": "job_id and chapter_number required"}), 400
         
         print(f"Processing chapter {chapter_number} for job {job_id}")

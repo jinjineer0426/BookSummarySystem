@@ -36,7 +36,7 @@ This guide explains how to deploy the Book Summary System to Google Cloud Platfo
         *   `GEMINI_API_KEY`: Your Gemini API Key (if using AI Studio key) or rely on Vertex AI (if using default credentials). *Code defaults to Vertex AI if key is dummy.*
 5.  **Code**:
     *   **Runtime**: Python 3.10 (or newer).
-    *   **Entry point**: `process_book`
+    *   **Entry point**: `main_http_entry` (Crucial: Do not use `process_book`, as we need the router)
     *   **Source code**: Upload the files from `cloud_function/` (`main.py` and `requirements.txt`).
 6.  **Deploy**: Click Deploy and wait for it to finish.
 7.  **Copy URL**: Once deployed, copy the **Function URL** (e.g., `https://...cloudfunctions.net/process_book`).

@@ -34,12 +34,18 @@ def finalize_book(request):
     Can also be triggered by a scheduler to check for completed jobs.
     """
     try:
+        print(f"Finalizing job request. method={request.method}, path={request.path}")
+        print(f"Headers: {dict(request.headers)}")
+        print(f"Data: {request.get_data(as_text=True)[:1000]}") # Log first 1000 chars
+
         request_json = request.get_json(silent=True)
         if not request_json:
+            print("Error: No JSON payload found.")
             return json.dumps({"error": "No payload"}), 400
         
         job_id = request_json.get("job_id")
         if not job_id:
+            print("Error: job_id missing in payload.")
             return json.dumps({"error": "job_id required"}), 400
         
         print(f"Finalizing job {job_id}")
@@ -59,9 +65,8 @@ def finalize_book(request):
         
         if len(completed_chapters) < total_chapters:
             return json.dumps({
-                "status": "pending",
                 "message": f"Waiting for chapters: {len(completed_chapters)}/{total_chapters} complete"
-            }), 200
+            }), 429
         
         # 2. Read all chapter results
         chapter_summaries = _read_all_chapter_results(gcs, job_id, total_chapters)
