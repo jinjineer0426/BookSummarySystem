@@ -48,7 +48,7 @@ def main_http_entry(request):
     Enables Single-Function deployment for multiple handlers.
     """
     path = request.path
-    print(f"Routing request for: {path}")
+    print(f"Routing request: method={request.method}, path={path}, args={request.args}")
     
     if path == "/" or path.endswith("/process_book"):
         return process_book(request)
