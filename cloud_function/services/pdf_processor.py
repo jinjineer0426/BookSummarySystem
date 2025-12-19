@@ -73,18 +73,44 @@ class PdfProcessor:
 
     def split_into_chapters(self, text: str) -> List[Dict[str, str]]:
         """
-        Splits text into chapters/parts.
+        Splits text into chapters/parts with improved pattern matching.
         Handles multiple formats: Chapter X, 第X章, Part X, PART X, 第X部, パートX, etc.
+        Includes fallback logic when initial detection fails.
         """
-        # Extended pattern for various chapter/part formats
-        # Improved regex to prevent false positives like "第一部では..." by enforcing a separator after finding the unit
-        chapter_pattern = r'(?:^|\n)\s*(?:Chapter|CHAPTER|第|Part|PART|パート|part)\s*(\d+|[一二三四五六七八九十]+|[IVXivx]+)(?:(?:章|部)(?=[\s　:：.]|$)|(?:\s*[:：.]|\s*\n|\s+))[^\n]*'
-        matches = list(re.finditer(chapter_pattern, text, re.IGNORECASE))
+        # Primary pattern - strict matching with separators
+        # Matches: 第1部, 第一章, Chapter 1, Part I, etc.
+        primary_pattern = r'(?:^|[\n\r]+)\s*(?:第\s*([0-9０-９一二三四五六七八九十百壱弐参]+)\s*[部章編節]|(?:Chapter|CHAPTER|Part|PART|パート)\s*([0-9０-９IVXivx]+))[　\s:：\-−—.．]*([^\n\r]{0,80})'
         
-        print(f"Chapter detection: Found {len(matches)} chapters/parts")
+        matches = list(re.finditer(primary_pattern, text, re.IGNORECASE))
+        print(f"Chapter detection (primary): Found {len(matches)} chapters/parts")
         for m in matches[:10]:  # Log first 10 matches
-            print(f"  - Detected: {m.group(0).strip()[:50]}...")
+            print(f"  - Detected: {m.group(0).strip()[:60]}...")
         
+        # Fallback: If only 0-1 chapters detected, try more lenient pattern
+        if len(matches) <= 1:
+            print("Warning: Only 0-1 chapters detected. Trying fallback pattern...")
+            # More lenient pattern - just looks for 第X部 or 第X章 anywhere
+            fallback_pattern = r'第\s*[0-9０-９一二三四五六七八九十壱弐参]+\s*[部章]'
+            fallback_positions = [(m.start(), m.group()) for m in re.finditer(fallback_pattern, text)]
+            print(f"  Fallback pattern found {len(fallback_positions)} matches")
+            
+            if len(fallback_positions) > len(matches):
+                # Use fallback matches to split the text
+                chapters = []
+                for i, (pos, title) in enumerate(fallback_positions):
+                    start = pos + len(title)
+                    end = fallback_positions[i+1][0] if i + 1 < len(fallback_positions) else len(text)
+                    content = text[start:end].strip()
+                    # Get a better title by looking ahead a bit
+                    title_extended = text[pos:min(pos+100, len(text))].split('\n')[0].strip()
+                    if content:
+                        chapters.append({"title": title_extended, "content": content})
+                        print(f"  [Fallback] Chapter '{title_extended[:40]}...' has {len(content)} chars")
+                
+                if chapters:
+                    return chapters
+        
+        # Process primary matches
         chapters = []
         if not matches:
             print("Warning: No chapters detected, treating entire text as one chapter")
@@ -98,11 +124,11 @@ class PdfProcessor:
             content = text[start:end].strip()
             if content:
                 chapters.append({"title": title, "content": content})
-                print(f"  Chapter '{title[:30]}...' has {len(content)} chars")
+                print(f"  Chapter '{title[:40]}...' has {len(content)} chars")
                 
         return chapters
 
-    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None) -> Optional[Dict]:
+    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: int = None) -> Optional[Dict]:
         """
         Extracts TOC structure using Gemini Vision API.
         Converts first few pages to images and asks Gemini to parse content.
@@ -112,9 +138,11 @@ class PdfProcessor:
             gemini_service: GeminiService instance
             gcs_service: Optional GcsService for error logging
             job_id: Optional job_id for error logging
+            override_end_page: Optional override for TOC_SCAN_END_PAGE
         """
+        scan_end = override_end_page if override_end_page else TOC_SCAN_END_PAGE
         print("Starting Vision-based TOC extraction...")
-        print(f"  Config: Model={TOC_EXTRACTION_MODEL}, DPI={TOC_IMAGE_DPI}, Pages={TOC_SCAN_START_PAGE+1}-{TOC_SCAN_END_PAGE}")
+        print(f"  Config: Model={TOC_EXTRACTION_MODEL}, DPI={TOC_IMAGE_DPI}, Pages={TOC_SCAN_START_PAGE+1}-{scan_end}")
         
         error_details = None
         
@@ -125,7 +153,7 @@ class PdfProcessor:
             
             # Use configurable scan range
             start_page = TOC_SCAN_START_PAGE
-            end_page = min(TOC_SCAN_END_PAGE, total_pages)
+            end_page = min(scan_end, total_pages)
             
             images = []
             print(f"Converting pages {start_page+1}-{end_page} to images (DPI={TOC_IMAGE_DPI})...")
@@ -142,26 +170,32 @@ class PdfProcessor:
             
             doc.close()
             
-            prompt = f"""あなたは書籍の目次を画像から読み取る専門家です。
+            prompt = f"""あなたは書籍の構造を分析する専門家です。
 
 【PDF情報】
 - 総ページ数: {total_pages}
 - ファイル名: {filename}
 
-添付画像から目次（章タイトルと開始ページ番号）を抽出してください。
+添付画像から書籍の構成（部・章）を抽出してください。
+
+【抽出対象】
+1. まず目次ページを探す
+2. 目次がない場合は、本文中の「第○部」「第○章」「Chapter X」「Part X」などの見出しを検出。さらに、その下の「第○節」「Section X」などの主要な小見出しも含めて、書籍全体の詳細な構造を抽出する
+3. 「第一部」「第二部」のような部構成がある場合は必ずすべて含める（重要）
+4. 各部/章/節のタイトルと開始ページ番号を正確に抽出
 
 【抽出ルール】
-1. 「第○章」「Chapter X」などの構造を維持
-2. ページ番号は行の右端にある数字（開始ページ）
-3. ページ番号が {total_pages} を超える章は除外（別巻の可能性）
-4. 出力は以下のJSON形式のみ
+- ページ番号が {total_pages} を超える章は除外（別巻の可能性）
+- 「第1部」「第2部」「第3部」「第4部」のような部構成は必ずすべて検出する
+- 出力は以下のJSON形式のみ
 
 {{
   "volume_info": "上巻/下巻/全1巻",
+  "has_toc_page": true,
   "chapters_in_this_volume": [
     {{
-      "number": "第1章",
-      "title": "章タイトル",
+      "number": "第1部",
+      "title": "部タイトル",
       "content_start_page": 25
     }}
   ]
@@ -206,7 +240,21 @@ class PdfProcessor:
                 ch["content_end_page"] = chapter_end
             
             result["chapters_in_this_volume"] = chapters
-            print(f"Vision TOC extraction success: Found {len(chapters)} chapters (sorted by page)")
+            
+            # Warning if only 0-1 chapters detected
+            if len(chapters) <= 1:
+                warning_msg = f"⚠️ Vision TOC extracted only {len(chapters)} chapter(s) - this may indicate extraction failure"
+                print(warning_msg)
+                # Save debug info even for non-error cases
+                self._save_toc_error(gcs_service, job_id, {
+                    "stage": "validation",
+                    "warning": warning_msg,
+                    "extracted_chapters": len(chapters),
+                    "raw_result": result
+                })
+            else:
+                print(f"Vision TOC extraction success: Found {len(chapters)} chapters (sorted by page)")
+            
             return result
             
         except Exception as e:
