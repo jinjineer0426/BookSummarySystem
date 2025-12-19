@@ -52,6 +52,8 @@ def main_http_entry(request):
     
     if path == "/" or path.endswith("/process_book"):
         return process_book(request)
+    elif path.endswith("/prepare_book"):
+        return prepare_book(request)
     elif path.endswith("/process_chapter"):
         return process_chapter(request)
     elif path.endswith("/finalize_book"):
@@ -103,140 +105,168 @@ def _create_cloud_task(
 @functions_framework.http
 def process_book(request):
     """
-    Cloud Function Entry Point - Orchestrator.
+    Cloud Function Entry Point - Initial Receiver.
     
-    Triggered by HTTP request from GAS.
-    1. Downloads PDF from Google Drive.
-    2. Extracts text and splits into chapters.
-    3. Saves chapters to GCS.
-    4. Enqueues Cloud Tasks for each chapter (60s apart).
-    5. Schedules finalizer task after all chapters.
-    
-    Returns: JSON with job_id for tracking.
+    1. Receives file_id and category from GAS.
+    2. Generates job_id.
+    3. Enqueues a 'prepare_book' task to do the heavy lifting.
+    4. Returns immediately to GAS.
     """
     try:
         request_json = request.get_json(silent=True)
-        
         if not request_json or 'file_id' not in request_json:
             return json.dumps({'error': 'file_id required'}), 400
         
         file_id = request_json['file_id']
         category = request_json.get('category', 'Business')
-        use_cloud_tasks = request_json.get('use_cloud_tasks', True)
-        
-        print(f"Processing file: {file_id}, Category: {category}, CloudTasks: {use_cloud_tasks}")
-        
-        # Generate job ID
         job_id = str(uuid.uuid4())
-        print(f"Job ID: {job_id}")
         
-        # Initialize services
+        print(f"Initial request received: file_id={file_id}, job_id={job_id}")
+        
+        # Enqueue preparation task
+        gcs = GcsService()
+        queue_path = f"projects/{PROJECT_ID}/locations/{REGION}/queues/{QUEUE_NAME}"
+        prepare_url = f"{FUNCTION_URL}/prepare_book"
+        
+        _create_cloud_task(
+            gcs, queue_path, prepare_url,
+            {"file_id": file_id, "category": category, "job_id": job_id}
+        )
+        
+        return json.dumps({
+            'status': 'accepted',
+            'job_id': job_id,
+            'message': 'Book processing started in background'
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in process_book receiver: {e}")
+        return json.dumps({'error': str(e)}), 500
+
+@functions_framework.http
+def prepare_book(request):
+    """
+    Cloud Task Handler - Heavy Lifting.
+    1. Downloads PDF.
+    2. TOC Extraction (Vision AI) & Regex Splitting.
+    3. Saves chapters & Metadata.
+    4. Enqueues individual chapter tasks.
+    """
+    try:
+        data = request.get_json(silent=True)
+        file_id = data.get('file_id')
+        category = data.get('category')
+        job_id = data.get('job_id')
+        
+        print(f"Preparing book: job_id={job_id}, file_id={file_id}")
+        
         gcs = GcsService()
         pdf_processor = PdfProcessor()
         gemini = GeminiService()
         
-        # Drive API Setup (Only for Reading PDF)
         creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
         drive_service = build('drive', 'v3', credentials=creds)
         
-        # 1. Get file metadata
         file_metadata = drive_service.files().get(fileId=file_id).execute()
         file_name = file_metadata.get('name', 'Untitled')
         if file_name.lower().endswith('.pdf'):
             file_name = file_name[:-4]
+            
+        pdf_path = pdf_processor.download_file_to_temp(drive_service, file_id, file_name)
         
-        # 2. Download and process PDF
-        pdf_path = None
         try:
-            pdf_path = pdf_processor.download_file_to_temp(drive_service, file_id, file_name)
-            
-            # Try Vision-based TOC extraction first
-            print("Attempting Vision-based TOC extraction...")
+            # 1. Extraction (TOC Priority with Retry)
+            print("Attempt 1: Vision TOC extraction with default range...")
             toc_data = pdf_processor.extract_toc_with_ai(pdf_path, gemini, gcs, job_id)
-            
-            chapters = []
+            toc_chapters = []
             if toc_data and toc_data.get("chapters_in_this_volume"):
-                print("Using TOC-based chapter extraction...")
-                chapters = pdf_processor.extract_chapters_from_toc(pdf_path, toc_data)
+                toc_chapters = pdf_processor.extract_chapters_from_toc(pdf_path, toc_data)
             
-            # Fallback to Regex if TOC failed or returned no chapters
-            if not chapters:
-                print("Fallback to Regex-based splitting...")
+            # Retry TOC if less than 2 chapters found
+            if len(toc_chapters) < 2:
+                print(f"Only {len(toc_chapters)} chapters found. Attempt 2: Expanding TOC range to 50 pages...")
+                toc_data_retry = pdf_processor.extract_toc_with_ai(pdf_path, gemini, gcs, job_id, override_end_page=50)
+                if toc_data_retry and toc_data_retry.get("chapters_in_this_volume"):
+                    toc_chapters_retry = pdf_processor.extract_chapters_from_toc(pdf_path, toc_data_retry)
+                    if len(toc_chapters_retry) >= 2:
+                        print(f"Success in Attempt 2: Found {len(toc_chapters_retry)} chapters.")
+                        toc_chapters = toc_chapters_retry
+            
+            # 2. Decision Logic
+            if len(toc_chapters) >= 2:
+                print(f"Decision: Using TOC-based extraction (Count: {len(toc_chapters)})")
+                chapters = toc_chapters
+            else:
+                # TOC failed or insufficient structure. Try Regex.
+                print("TOC failed to find sufficient structure. Trying Regex-based extraction...")
                 text = pdf_processor.extract_text_from_pdf_file(pdf_path)
-                chapters = pdf_processor.split_into_chapters(text)
+                regex_chapters = pdf_processor.split_into_chapters(text)
                 
-        finally:
-            if pdf_path and os.path.exists(pdf_path):
-                try:
-                    os.remove(pdf_path)
-                    print(f"Cleaned up temp file: {pdf_path}")
-                except Exception as e:
-                    print(f"Warning: Failed to delete temp file: {e}")
-        
-        # 3. Get existing concepts for context
-        master_concepts = list(gcs.get_concepts().get("concepts", {}).keys())
-        
-        # 4. Save job metadata and chapter inputs to GCS
-        job_metadata = {
-            "job_id": job_id,
-            "file_id": file_id,
-            "book_title": file_name,
-            "category": category,
-            "total_chapters": len(chapters),
-            "completed_chapters": [],
-            "status": "processing",
-            "created_at": datetime.now().isoformat()
-        }
-        
-        metadata_blob = gcs.bucket.blob(f"jobs/{job_id}/metadata.json")
-        metadata_blob.upload_from_string(
-            json.dumps(job_metadata, ensure_ascii=False, indent=2),
-            content_type="application/json"
-        )
-        
-        chapters_blob = gcs.bucket.blob(f"jobs/{job_id}/input_chapters.json")
-        chapters_blob.upload_from_string(
-            json.dumps(chapters, ensure_ascii=False),
-            content_type="application/json"
-        )
-        
-        print(f"Saved {len(chapters)} chapters to GCS for job {job_id}")
-        
-        if use_cloud_tasks and FUNCTION_URL:
-            # 5. Enqueue Cloud Tasks for each chapter
+                if len(regex_chapters) > 100:
+                    error_msg = f"Regex runaway detected: {len(regex_chapters)} potential chapters found (limit 100). Aborting."
+                    print(f"CRITICAL ERROR: {error_msg}")
+                    # Save error to GCS before crashing
+                    pdf_processor._save_toc_error(gcs, job_id, {"stage": "regex", "error": error_msg})
+                    raise Exception(error_msg)
+                
+                if len(regex_chapters) >= 2:
+                    print(f"Decision: Using Regex extraction (Count: {len(regex_chapters)})")
+                    chapters = regex_chapters
+                else:
+                    # Final fallback: use whatever TOC found (even 1 chapter), or full text
+                    if len(toc_chapters) > 0:
+                        print("Decision: Both failed to find clear structure. Using single TOC chapter.")
+                        chapters = toc_chapters
+                    else:
+                        print("Decision: No structure detected. Using full text as a single chapter.")
+                        chapters = [{"title": "Full Text", "content": text}]
+            
+            # 2. Setup Job in GCS
+            master_concepts = list(gcs.get_concepts().get("concepts", {}).keys())
+            
+            job_metadata = {
+                "job_id": job_id, "file_id": file_id, "book_title": file_name,
+                "category": category, "total_chapters": len(chapters),
+                "completed_chapters": [], "status": "processing",
+                "created_at": datetime.now().isoformat()
+            }
+            if len(chapters) == 1:
+                job_metadata["detection_warning"] = "only_1_chapter_detected"
+            
+            gcs.bucket.blob(f"jobs/{job_id}/metadata.json").upload_from_string(
+                json.dumps(job_metadata, ensure_ascii=False, indent=2),
+                content_type="application/json"
+            )
+            gcs.bucket.blob(f"jobs/{job_id}/input_chapters.json").upload_from_string(
+                json.dumps(chapters, ensure_ascii=False),
+                content_type="application/json"
+            )
+            
+            # 3. Enqueue Workers
             queue_path = f"projects/{PROJECT_ID}/locations/{REGION}/queues/{QUEUE_NAME}"
-            chapter_handler_url = f"{FUNCTION_URL}/process_chapter"
-            finalizer_handler_url = f"{FUNCTION_URL}/finalize_book"
+            chapter_url = f"{FUNCTION_URL}/process_chapter"
+            final_url = f"{FUNCTION_URL}/finalize_book"
             
             for i, chapter in enumerate(chapters):
-                delay = i * 60  # 60 seconds between each chapter
-                payload = {
-                    "job_id": job_id,
-                    "chapter_number": i,
-                    "book_title": file_name,
-                    "existing_concepts": master_concepts[:100]
-                }
-                _create_cloud_task(gcs, queue_path, chapter_handler_url, payload, delay)
+                _create_cloud_task(gcs, queue_path, chapter_url, {
+                    "job_id": job_id, "chapter_number": i,
+                    "book_title": file_name, "existing_concepts": master_concepts[:100]
+                }, delay_seconds=i * 60)
             
-            # 6. Schedule finalizer after all chapters (with extra buffer)
-            finalizer_delay = len(chapters) * 60 + 120  # 2 min buffer
-            _create_cloud_task(
-                gcs, queue_path, finalizer_handler_url,
-                {"job_id": job_id},
-                finalizer_delay
-            )
+            _create_cloud_task(gcs, queue_path, final_url, {"job_id": job_id}, 
+                               delay_seconds=len(chapters) * 60 + 120)
             
-            return json.dumps({
-                'status': 'queued',
-                'job_id': job_id,
-                'chapters': len(chapters),
-                'message': f'Enqueued {len(chapters)} chapter tasks'
-            }), 200
-        else:
-            # Fallback: Process synchronously (legacy mode)
-            return _process_synchronously(
-                gcs, job_id, file_id, file_name, category, chapters, master_concepts
-            )
+            print(f"Preparation complete for {job_id}")
+            return "OK", 200
+            
+        finally:
+            if pdf_path and os.path.exists(pdf_path):
+                os.remove(pdf_path)
+    except Exception as e:
+        print(f"Error in prepare_book: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error: {e}", 500
         
     except Exception as e:
         import traceback
