@@ -54,7 +54,12 @@ class AnalysisService:
         concepts = self._parse_concepts(content)
         
         hub_concepts = self._find_hub_concepts(concepts, threshold=3)
-        potential_duplicates = self._find_duplicates(concepts, similarity=0.85)
+        # Detect hierarchy candidates (substring matches)
+        hierarchy_candidates = self._find_hierarchy_candidates(concepts)
+        
+        # Detect potential duplicates (similarity), excluding those already in hierarchy
+        potential_duplicates = self._find_duplicates(concepts, hierarchy_candidates, similarity=0.85)
+        
         jp_en_pairs = self._find_jp_en_pairs(concepts)
         
         return {
@@ -65,6 +70,7 @@ class AnalysisService:
                     {"name": name, "count": len(sources)}
                     for name, sources in sorted(hub_concepts.items(), key=lambda x: -len(x[1]))
                 ],
+                "hierarchy_candidates": hierarchy_candidates,
                 "potential_duplicates": [
                     {"pair": [p[0], p[1]], "similarity": round(p[2], 2)}
                     for p in potential_duplicates[:20]  # Top 20
@@ -105,8 +111,19 @@ tags: [weekly_review, maintenance]
                 md += f"- **{score:.2f}**: [[{c1}]] <--> [[{c2}]]\n"
         else:
             md += "- No obvious duplicates found.\n"
+        md += "> These concepts have parent-child naming relationships. Consider linking them.\n"
+        md += "> **How to Link**: Open the child note and add `Up: [[Parent]]` or mention `[[Parent]]` in the content.\n\n"
+        
+        hierarchy = data.get("hierarchy_candidates", {})
+        if hierarchy:
+            for parent, children in hierarchy.items():
+                md += f"- **[[{parent}]]**\n"
+                for child in children:
+                    md += f"  - [[{child}]]\n"
+        else:
+            md += "- No hierarchy candidates found.\n"
             
-        md += "\n### 2. Japanese/English Notation Split\n"
+        md += "\n### 3. Japanese/English Notation Split\n"
         md += "> These concepts exist separately but might refer to the same thing (e.g. 'Apple' vs 'Apple (Fruit)').\n\n"
         
         pairs = data.get("jp_en_pairs", [])
@@ -152,7 +169,23 @@ tags: [weekly_review, maintenance]
         """Finds concepts referenced from multiple sources."""
         return {c: s for c, s in concepts.items() if len(s) >= threshold}
     
-    def _find_duplicates(self, concepts: Dict[str, set], similarity: float = 0.85) -> List[tuple]:
+    def _find_hierarchy_candidates(self, concepts: Dict[str, set]) -> Dict[str, List[str]]:
+        """Finds concepts that are substrings of others (potential parent-child)."""
+        candidates = defaultdict(list)
+        concept_list = sorted(list(concepts.keys()), key=len)  # Sort by length
+        
+        for i, parent in enumerate(concept_list):
+            for child in concept_list[i+1:]:
+                # Check strict substring (and strictly longer)
+                if parent in child and len(child) > len(parent):
+                    # Exclude if it's just a plural or minor variation (simple heuristic)
+                    if child == parent + "s" or child == parent + "es":
+                        continue
+                    candidates[parent].append(child)
+        
+        return dict(candidates)
+
+    def _find_duplicates(self, concepts: Dict[str, set], hierarchy: Dict[str, List[str]], similarity: float = 0.85) -> List[tuple]:
         """Finds potential duplicate concepts based on string similarity."""
         concept_list = list(concepts.keys())
         duplicates = []
@@ -164,8 +197,9 @@ tags: [weekly_review, maintenance]
                 
                 if n1 == n2:
                     duplicates.append((c1, c2, 1.0))
-                elif n1 in n2 or n2 in n1:
-                    duplicates.append((c1, c2, 0.9))
+                # Skip contains check here, handled by hierarchy detection
+                # elif n1 in n2 or n2 in n1:
+                #    duplicates.append((c1, c2, 0.9))
                 else:
                     ratio = SequenceMatcher(None, n1, n2).ratio()
                     if ratio >= similarity:
