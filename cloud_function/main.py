@@ -315,11 +315,6 @@ def prepare_book(request):
         import traceback
         traceback.print_exc()
         return f"Error: {e}", 500
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return json.dumps({'error': str(e)}), 500
 
 
 def _process_synchronously(
