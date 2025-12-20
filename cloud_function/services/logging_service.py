@@ -104,6 +104,22 @@ class JobLogger:
         self.logger = StructuredLogger(job_id=job_id)
         self.job_id = job_id
     
+    def info(self, message: str, **kwargs):
+        """Log info-level message (delegated to internal StructuredLogger)."""
+        self.logger.info(message, **kwargs)
+    
+    def warning(self, message: str, **kwargs):
+        """Log warning-level message (delegated to internal StructuredLogger)."""
+        self.logger.warning(message, **kwargs)
+    
+    def error(self, message: str, **kwargs):
+        """Log error-level message (delegated to internal StructuredLogger)."""
+        self.logger.error(message, **kwargs)
+    
+    def debug(self, message: str, **kwargs):
+        """Log debug-level message (delegated to internal StructuredLogger)."""
+        self.logger.debug(message, **kwargs)
+    
     def log_stage(self, stage: str, status: str, **kwargs):
         """
         Log a processing stage.
