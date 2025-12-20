@@ -1,0 +1,49 @@
+{
+    "version": "1.0",
+    "description": "Book Summary System - Unified Configuration (GCS Single Source of Truth)",
+    "gemini": {
+        "model_id": "gemini-2.0-flash",
+        "toc_extraction_model": "gemini-2.0-flash-exp",
+        "temperature": 0.2
+    },
+    "folders": {
+        "source_folders": {
+            "Humanities/Business": "",
+            "Technical": "",
+            "Manga": "",
+            "Novel": ""
+        },
+        "destination_folders": {
+            "Manga": "",
+            "Novel": "",
+            "Humanities/Business": "",
+            "Technical": "",
+            "Other": ""
+        },
+        "scan_raw_folder_id": "",
+        "fallback_folder_id": ""
+    },
+    "processing": {
+        "toc_scan_start_page": 3,
+        "toc_scan_end_page": 30,
+        "toc_image_dpi": 100,
+        "similarity_threshold": 0.82,
+        "batch_size": 2,
+        "batch_delay_seconds": 30
+    },
+    "cloud_tasks": {
+        "region": "us-central1",
+        "queue_name": "book-summary-queue",
+        "chapter_delay_seconds": 60
+    },
+    "notifications": {
+        "alert_email": "",
+        "enabled": false,
+        "alert_on_failure": true,
+        "alert_on_completion": false
+    },
+    "monitoring": {
+        "enable_structured_logging": true,
+        "log_level": "INFO"
+    }
+}

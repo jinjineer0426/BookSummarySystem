@@ -115,16 +115,22 @@ def process_book(request):
     3. Enqueues a 'prepare_book' task to do the heavy lifting.
     4. Returns immediately to GAS.
     """
+    from services.logging_service import StructuredLogger
+    
+    logger = StructuredLogger()
+    
     try:
         request_json = request.get_json(silent=True)
         if not request_json or 'file_id' not in request_json:
+            logger.error("Invalid request", error="file_id required")
             return json.dumps({'error': 'file_id required'}), 400
         
         file_id = request_json['file_id']
         category = request_json.get('category', 'Business')
         job_id = str(uuid.uuid4())
         
-        print(f"Initial request received: file_id={file_id}, job_id={job_id}")
+        logger.info("New book processing request", 
+                   job_id=job_id, file_id=file_id, category=category)
         
         # Enqueue preparation task
         gcs = GcsService()
@@ -136,6 +142,8 @@ def process_book(request):
             {"file_id": file_id, "category": category, "job_id": job_id}
         )
         
+        logger.info("Book processing accepted", job_id=job_id, status="queued")
+        
         return json.dumps({
             'status': 'accepted',
             'job_id': job_id,
@@ -143,7 +151,7 @@ def process_book(request):
         }), 200
         
     except Exception as e:
-        print(f"Error in process_book receiver: {e}")
+        logger.error("Error in process_book", error=str(e))
         return json.dumps({'error': str(e)}), 500
 
 @functions_framework.http
@@ -155,15 +163,26 @@ def prepare_book(request):
     3. Saves chapters & Metadata.
     4. Enqueues individual chapter tasks.
     """
+    from services.logging_service import JobLogger
+    from services.job_tracker import JobTracker
+    
+    job_id = None
+    logger = None
+    
     try:
         data = request.get_json(silent=True)
         file_id = data.get('file_id')
         category = data.get('category')
         job_id = data.get('job_id')
         
-        print(f"Preparing book: job_id={job_id}, file_id={file_id}")
+        # Initialize structured logger and job tracker
+        logger = JobLogger(job_id)
+        logger.log_stage("prepare_book", "started", file_id=file_id, category=category)
         
         gcs = GcsService()
+        tracker = JobTracker(gcs, job_id)
+        tracker.update_status("processing", {"stage": "initialization"})
+        
         pdf_processor = PdfProcessor()
         gemini = GeminiService()
         
@@ -174,12 +193,16 @@ def prepare_book(request):
         file_name = file_metadata.get('name', 'Untitled')
         if file_name.lower().endswith('.pdf'):
             file_name = file_name[:-4]
-            
+        
+        logger.log_stage("download", "started", file_name=file_name)
         pdf_path = pdf_processor.download_file_to_temp(drive_service, file_id, file_name)
+        logger.log_stage("download", "completed")
         
         try:
             # 1. Extraction (TOC Priority with Retry)
-            print("Attempt 1: Vision TOC extraction with default range...")
+            logger.log_stage("toc_extraction", "attempt_1")
+            tracker.update_status("processing", {"stage": "toc_extraction"})
+            
             toc_data = pdf_processor.extract_toc_with_ai(pdf_path, gemini, gcs, job_id)
             toc_chapters = []
             if toc_data and toc_data.get("chapters_in_this_volume"):
@@ -187,41 +210,41 @@ def prepare_book(request):
             
             # Retry TOC if less than 2 chapters found
             if len(toc_chapters) < 2:
-                print(f"Only {len(toc_chapters)} chapters found. Attempt 2: Expanding TOC range to 50 pages...")
+                logger.log_stage("toc_extraction", "retry", chapters_found=len(toc_chapters))
                 toc_data_retry = pdf_processor.extract_toc_with_ai(pdf_path, gemini, gcs, job_id, override_end_page=50)
                 if toc_data_retry and toc_data_retry.get("chapters_in_this_volume"):
                     toc_chapters_retry = pdf_processor.extract_chapters_from_toc(pdf_path, toc_data_retry)
                     if len(toc_chapters_retry) >= 2:
-                        print(f"Success in Attempt 2: Found {len(toc_chapters_retry)} chapters.")
+                        logger.log_stage("toc_extraction", "retry_success", chapters_found=len(toc_chapters_retry))
                         toc_chapters = toc_chapters_retry
             
             # 2. Decision Logic
             if len(toc_chapters) >= 2:
-                print(f"Decision: Using TOC-based extraction (Count: {len(toc_chapters)})")
+                logger.log_stage("chapter_extraction", "using_toc", chapter_count=len(toc_chapters))
                 chapters = toc_chapters
             else:
                 # TOC failed or insufficient structure. Try Regex.
-                print("TOC failed to find sufficient structure. Trying Regex-based extraction...")
+                logger.log_stage("chapter_extraction", "fallback_regex")
                 text = pdf_processor.extract_text_from_pdf_file(pdf_path)
                 regex_chapters = pdf_processor.split_into_chapters(text)
                 
                 if len(regex_chapters) > 100:
                     error_msg = f"Regex runaway detected: {len(regex_chapters)} potential chapters found (limit 100). Aborting."
-                    print(f"CRITICAL ERROR: {error_msg}")
-                    # Save error to GCS before crashing
+                    logger.log_error("chapter_extraction", error_msg, chapter_count=len(regex_chapters))
+                    tracker.mark_failed(error_msg, "regex_runaway")
                     pdf_processor._save_toc_error(gcs, job_id, {"stage": "regex", "error": error_msg})
                     raise Exception(error_msg)
                 
                 if len(regex_chapters) >= 2:
-                    print(f"Decision: Using Regex extraction (Count: {len(regex_chapters)})")
+                    logger.log_stage("chapter_extraction", "using_regex", chapter_count=len(regex_chapters))
                     chapters = regex_chapters
                 else:
                     # Final fallback: use whatever TOC found (even 1 chapter), or full text
                     if len(toc_chapters) > 0:
-                        print("Decision: Both failed to find clear structure. Using single TOC chapter.")
+                        logger.log_stage("chapter_extraction", "fallback_single_toc")
                         chapters = toc_chapters
                     else:
-                        print("Decision: No structure detected. Using full text as a single chapter.")
+                        logger.log_stage("chapter_extraction", "fallback_full_text")
                         chapters = [{"title": "Full Text", "content": text}]
             
             # 2. Setup Job in GCS
@@ -259,14 +282,24 @@ def prepare_book(request):
             _create_cloud_task(gcs, queue_path, final_url, {"job_id": job_id}, 
                                delay_seconds=len(chapters) * 60 + 120)
             
-            print(f"Preparation complete for {job_id}")
+            logger.log_stage("prepare_book", "completed", chapter_count=len(chapters))
+            logger.log_metric("chapters_enqueued", len(chapters))
+            tracker.mark_queued(len(chapters))
             return "OK", 200
             
         finally:
             if pdf_path and os.path.exists(pdf_path):
                 os.remove(pdf_path)
+                logger.logger.debug("Cleaned up temp PDF file")
     except Exception as e:
-        print(f"Error in prepare_book: {e}")
+        if logger:
+            logger.log_error("prepare_book", str(e))
+        if job_id:
+            try:
+                tracker = JobTracker(GcsService(), job_id)
+                tracker.mark_failed(str(e), "prepare_book")
+            except:
+                pass
         import traceback
         traceback.print_exc()
         return f"Error: {e}", 500

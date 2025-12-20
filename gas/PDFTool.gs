@@ -8,13 +8,32 @@
 // グローバルスコープで定義しておくと安心
 let PDFLib = null;
 
-// Gemini Configuration
-const pdfProps = PropertiesService.getScriptProperties();
-const GEMINI_CONFIG = {
-  MODEL_ID: 'gemini-2.0-flash',
-  DESTINATION_FOLDER_IDS: JSON.parse(pdfProps.getProperty('PDF_DESTINATION_FOLDERS') || '{}')
-};
-
+// === Configuration (Unified via ConfigService) ===
+/**
+ * Get PDF tool configuration from ConfigService
+ */
+function getPdfConfig_() {
+  const config = new ConfigService().getConfig();
+  const props = PropertiesService.getScriptProperties();
+  
+  return {
+    // Gemini model from GCS config (or default)
+    MODEL_ID: config.gemini?.model_id || 'gemini-2.0-flash',
+    
+    // Destination folder IDs from GCS config (or Script Properties fallback)
+    DESTINATION_FOLDER_IDS: config.folders?.destination_folders || 
+                            JSON.parse(props.getProperty('PDF_DESTINATION_FOLDERS') || '{}'),
+    
+    // Folder IDs (still from Script Properties for now - specific to local setup)
+    SCAN_RAW_FOLDER_ID: config.folders?.scan_raw_folder_id ||
+                        props.getProperty('PDF_SCAN_RAW_FOLDER_ID') || '',
+    FALLBACK_FOLDER_ID: config.folders?.fallback_folder_id ||
+                        props.getProperty('PDF_FALLBACK_FOLDER_ID') || '',
+    
+    // API Key (from Script Properties for security)
+    API_KEY: props.getProperty('GEMINI_API_KEY') || ''
+  };
+}
 
 function loadPdfLib() {
   if (PDFLib) return;
@@ -39,9 +58,12 @@ async function main() {
     return;
   }
   
+  // Load unified configuration
+  const CONFIG = getPdfConfig_();
+  
   try {
-    // ユーザー指定のフォルダを使用 (Fetch from properties)
-    const targetFolderId = pdfProps.getProperty('PDF_SCAN_RAW_FOLDER_ID');
+    // ユーザー指定のフォルダを使用 (ConfigService経由)
+    const targetFolderId = CONFIG.SCAN_RAW_FOLDER_ID;
     console.log('対象フォルダID: ' + targetFolderId);
     const currentFolder = DriveApp.getFolderById(targetFolderId);
     console.log('対象フォルダ: ' + currentFolder.getName());
@@ -82,15 +104,14 @@ async function main() {
     }
     
     // 3. 結合処理
-    const fallbackFolderId = pdfProps.getProperty('PDF_FALLBACK_FOLDER_ID');
+    const fallbackFolderId = CONFIG.FALLBACK_FOLDER_ID;
     const fallbackFolder = DriveApp.getFolderById(fallbackFolderId);
     console.log('AI分析スキップ時の保存先: ' + fallbackFolder.getName());
     
     let successCount = 0;
     
-    // API Key for Gemini (Script Properties serve as Environment Variables in GAS)
-    const scriptProperties = PropertiesService.getScriptProperties();
-    const apiKey = scriptProperties.getProperty('GEMINI_API_KEY');
+    // API Key for Gemini (from config)
+    const apiKey = CONFIG.API_KEY;
     
     if (!apiKey) {
       console.log('Gemini APIキー (GEMINI_API_KEY) が設定されていません。AI分析をスキップします。');
@@ -112,7 +133,7 @@ async function main() {
              console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
              combinedName = constructFileName(analysis).replace(/\.pdf$/i, '');
              
-             const mappedFolderId = GEMINI_CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
+             const mappedFolderId = CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
              if (mappedFolderId && mappedFolderId.length > 5) {
                targetFolderId = mappedFolderId;
                console.log(`  -> 振分け先: ${analysis.category} (${targetFolderId})`);
@@ -152,7 +173,7 @@ async function main() {
              console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
              fileName = constructFileName(analysis).replace(/\.pdf$/i, '');
              
-             const mappedFolderId = GEMINI_CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
+             const mappedFolderId = CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
              if (mappedFolderId && mappedFolderId.length > 5) {
                targetFolderId = mappedFolderId;
                console.log(`  -> 振分け先: ${analysis.category} (${targetFolderId})`);
@@ -444,7 +465,9 @@ function analyzePdfWithGemini(pdfBytes, apiKey) {
     }
     
     // 4. 生成リクエスト
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_CONFIG.MODEL_ID}:generateContent?key=${apiKey}`;
+    // Note: MODEL_ID should be passed as parameter or loaded from config
+    const modelId = 'gemini-2.0-flash';  // Default, can be overridden by caller
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
     
     const prompt = `
       Analyze this book cover.

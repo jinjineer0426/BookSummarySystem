@@ -63,22 +63,51 @@ BookSummarySystem/
 │   └── Procfile          # Cloud Run の起動定義
 ├── gas/                   # Google Apps Script層 (トリガーとドライブ管理)
 │   ├── PDFTool.gs        # PDFの処理と自動整理
-│   └── Trigger.gs        # ワークフロー全体の制御
+│   ├── Trigger.gs        # ワークフロー全体の制御
+│   ├── ConfigService.gs  # GCS設定ローダー
+│   └── AlertService.gs   # エラー通知サービス
+├── config/                # 統一設定
+│   └── system_config.json # GCS設定ファイル
 └── docs/                  # ドキュメント・アセット
     ├── ARCHITECTURE.md    # システム全体構成
     ├── PDF_PROCESSING_FLOW.md  # PDF処理の分岐ロジック
-    └── TOC_EXTRACTION.md  # 目次抽出ロジック
+    ├── TOC_EXTRACTION.md  # 目次抽出ロジック
+    ├── CONFIG.md          # 設定管理ガイド
+    └── MONITORING.md      # 監視・アラートガイド
 ```
+
+## 監視とアラート
+
+システムは包括的な監視機能を備えています：
+
+- **📊 Structured Logging**: Cloud Logging へのジョブ追跡ログ
+- **📈 Job Status Tracking**: GCS上でリアルタイムにステータス確認
+- **📧 Email Alerts**: エラー発生時の自動通知
+- **🔍 Log Queries**: ジョブIDやステージ別のログ検索
+
+詳細は **[MONITORING.md](./docs/MONITORING.md)** を参照してください。
+
+## 設定管理
+
+設定は GCS 上の `config/system_config.json` で一元管理されます。これにより:
+
+- Cloud Function と GAS で設定を共有
+- 再デプロイなしで設定変更が可能
+- 環境変数をフォールバックとして保持
+
+詳細は **[CONFIG.md](./docs/CONFIG.md)** を参照してください。
 
 ## 技術ドキュメント
 
-処理ロジックの詳細は以下を参照してください：
+処理ロジックの詳細は以下を参照してください:：
 
 | ドキュメント | 内容 |
 | :--- | :--- |
 | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | システム全体の構成とコンポーネント一覧 |
 | [PDF_PROCESSING_FLOW.md](./docs/PDF_PROCESSING_FLOW.md) | PDFTool.gsの分類・結合・振り分けロジック |
 | [TOC_EXTRACTION.md](./docs/TOC_EXTRACTION.md) | Vision AI / 正規表現による目次抽出フロー |
+| [CONFIG.md](./docs/CONFIG.md) | 設定管理ガイド (GCS統一設定) |
+| [MONITORING.md](./docs/MONITORING.md) | 監視・アラート・ログ管理ガイド |
 
 ## セットアップとデプロイ
 

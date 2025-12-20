@@ -3,28 +3,36 @@
  * Monitors specific folders for new PDF files and triggers the Cloud Function.
  */
 
-// === Configuration ===
-// === Configuration ===
-// These values are now fetched from Script Properties for security.
-// Use setInitialProperties() to initialize these if needed.
-const props = PropertiesService.getScriptProperties();
-const CONFIG = {
-  // Map of Category Name to Folder ID (parsed from JSON string in properties)
-  SOURCE_FOLDERS: JSON.parse(props.getProperty('SOURCE_FOLDERS') || '{}'),
+// === Configuration (Unified via ConfigService) ===
+// ConfigService loads from GCS with Script Properties fallback.
+// See gas/ConfigService.gs for implementation.
+
+/**
+ * Get configuration - uses ConfigService for unified config management
+ */
+function getConfig_() {
+  const config = new ConfigService().getConfig();
+  const props = PropertiesService.getScriptProperties();
   
-  // URL of your deployed Cloud Function
-  CLOUD_FUNCTION_URL: props.getProperty('CLOUD_FUNCTION_URL') || '',
-  
-  // Spreadsheet ID to track processed files
-  PROCESSED_SHEET_ID: props.getProperty('PROCESSED_SHEET_ID') || '',
-  
-  // Sheet Name for logging
-  LOG_SHEET_NAME: props.getProperty('LOG_SHEET_NAME') || 'log'
-};
+  return {
+    // Folder configuration from GCS (or Script Properties fallback)
+    SOURCE_FOLDERS: config.folders?.source_folders || 
+                    JSON.parse(props.getProperty('SOURCE_FOLDERS') || '{}'),
+    
+    // Cloud Function URL
+    CLOUD_FUNCTION_URL: config.cloud_function_url || 
+                        props.getProperty('CLOUD_FUNCTION_URL') || '',
+    
+    // Spreadsheet for tracking (still from Script Properties - local resource)
+    PROCESSED_SHEET_ID: props.getProperty('PROCESSED_SHEET_ID') || '',
+    LOG_SHEET_NAME: props.getProperty('LOG_SHEET_NAME') || 'log'
+  };
+}
 
 
 // === Main Trigger Function ===
 function checkNewFiles() {
+  const CONFIG = getConfig_();  // Load config each run
   const processedIds = getProcessedFileIds();
   
   for (const [category, folderId] of Object.entries(CONFIG.SOURCE_FOLDERS)) {
@@ -79,6 +87,7 @@ function checkNewFiles() {
 }
 
 function callCloudFunction(fileId, category) {
+  const CONFIG = getConfig_();  // Load config
   const payload = {
     file_id: fileId,
     category: category
@@ -138,6 +147,7 @@ function markAsProcessed(fileId, fileName, category, result) {
 }
 
 function getLogSheet() {
+  const CONFIG = getConfig_();  // Load config
   const ss = SpreadsheetApp.openById(CONFIG.PROCESSED_SHEET_ID);
   let sheet = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
   
