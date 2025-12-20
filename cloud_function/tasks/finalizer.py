@@ -19,6 +19,8 @@ from config import BUCKET_NAME
 from services.gcs_service import GcsService
 from services.gemini_service import GeminiService
 from services.index_service import IndexService, ConceptNormalizer
+from services.logging_service import JobLogger
+from services.job_tracker import JobTracker
 
 
 @functions_framework.http
@@ -34,21 +36,18 @@ def finalize_book(request):
     Can also be triggered by a scheduler to check for completed jobs.
     """
     try:
-        print(f"Finalizing job request. method={request.method}, path={request.path}")
-        print(f"Headers: {dict(request.headers)}")
-        print(f"Data: {request.get_data(as_text=True)[:1000]}") # Log first 1000 chars
-
-        request_json = request.get_json(silent=True)
-        if not request_json:
-            print("Error: No JSON payload found.")
-            return json.dumps({"error": "No payload"}), 400
-        
         job_id = request_json.get("job_id")
+        
+        # Initialize structured logger and job tracker
+        logger = JobLogger(job_id)
+        gcs = GcsService()
+        tracker = JobTracker(gcs, job_id)
+        
         if not job_id:
-            print("Error: job_id missing in payload.")
+            logger.log_error("finalizer", "job_id missing in payload")
             return json.dumps({"error": "job_id required"}), 400
         
-        print(f"Finalizing job {job_id}")
+        logger.log_stage("finalization", "started")
         
         # Initialize services
         gcs = GcsService()
@@ -111,7 +110,7 @@ def finalize_book(request):
         clean_title = re.sub(r'[\\/:*?"<>|]', '_', final_data["title"])
         md_path = f"01_Reading/{clean_title}.md"
         gcs_uri = gcs.write_to_obsidian_vault(md_path, md_content)
-        print(f"Written to GCS: {gcs_uri}")
+        logger.log_stage("finalization", "file_written", gcs_uri=gcs_uri)
         
         # 8. Update indexes
         index_service.update_books_index(
@@ -125,7 +124,8 @@ def finalize_book(request):
         )
         
         # 9. Mark job as complete
-        _mark_job_complete(gcs, job_id, gcs_uri)
+        tracker.mark_completed(gcs_uri)
+        logger.log_stage("finalization", "completed")
         
         return json.dumps({
             "status": "success",
@@ -134,6 +134,10 @@ def finalize_book(request):
         }), 200
         
     except Exception as e:
+        if 'logger' in locals() and logger:
+            logger.log_error("finalizer", str(e))
+        if 'tracker' in locals() and tracker:
+            tracker.mark_failed(str(e), "finalization")
         import traceback
         traceback.print_exc()
         return json.dumps({"error": str(e)}), 500
@@ -266,20 +270,4 @@ source_url: "{pdf_url}"
     return md
 
 
-def _mark_job_complete(gcs: GcsService, job_id: str, gcs_uri: str):
-    """Marks the job as complete in metadata."""
-    blob = gcs.bucket.blob(f"jobs/{job_id}/metadata.json")
-    if blob.exists():
-        metadata = json.loads(blob.download_as_text())
-    else:
-        metadata = {}
-    
-    metadata["status"] = "complete"
-    metadata["completed_at"] = datetime.now().isoformat()
-    metadata["output_uri"] = gcs_uri
-    
-    blob.upload_from_string(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        content_type="application/json"
-    )
-    print(f"Job {job_id} marked as complete")
+# _mark_job_complete is now handled by tracker.mark_completed()

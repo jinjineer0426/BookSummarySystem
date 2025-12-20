@@ -8,29 +8,31 @@ import google.generativeai as genai
 from typing import Optional, Dict, Any, List
 from config import GEMINI_API_KEY
 
-print("DEBUG: Initializing GeminiService", file=sys.stderr)
+from services.logging_service import get_logger
 
 class GeminiService:
     def __init__(self):
-        print("DEBUG: GeminiService.__init__ started", file=sys.stderr)
+        logger = get_logger()
+        logger.debug("GeminiService.__init__ started")
         if not GEMINI_API_KEY:
-            print("ERROR: GEMINI_API_KEY not found", file=sys.stderr)
+            logger.error("GEMINI_API_KEY is not set.")
             raise ValueError("GEMINI_API_KEY is not set.")
         try:
             genai.configure(api_key=GEMINI_API_KEY)
             # Use gemini-2.5-flash for higher quota limits
             self.model_name = 'gemini-2.5-flash'
             self.embedding_model = "models/text-embedding-004"
-            print(f"DEBUG: GeminiService initialized with model {self.model_name}", file=sys.stderr)
+            logger.debug(f"GeminiService initialized with model {self.model_name}")
         except Exception as e:
-            print(f"ERROR: Failed to configure genai: {e}", file=sys.stderr)
+            logger.error(f"Failed to configure genai: {e}")
             raise
 
     def generate_content(self, content: Any, max_retries: int = 3, model_name: Optional[str] = None) -> Optional[Dict]:
         """Call Gemini with retry logic."""
         target_model_name = model_name if model_name else self.model_name
+        logger = get_logger()
         
-        print(f"DEBUG: generate_content for model {target_model_name}", file=sys.stderr)
+        logger.debug(f"generate_content for model {target_model_name}")
         
         model = genai.GenerativeModel(
             model_name=target_model_name,
@@ -58,7 +60,7 @@ class GeminiService:
                     finish_reason = "Unknown"
                     if response.candidates:
                         finish_reason = response.candidates[0].finish_reason.name
-                    print(f"  Warning: Empty response text (attempt {attempt+1}). Finish reason: {finish_reason}", file=sys.stderr)
+                    logger.warning(f"Empty response text (attempt {attempt+1}). Finish reason: {finish_reason}")
                     if attempt < max_retries - 1:
                         time.sleep(3)
                     continue
@@ -73,7 +75,7 @@ class GeminiService:
                 
             except Exception as e:
                 error_str = str(e)
-                print(f"  API error (attempt {attempt+1}): {e}", file=sys.stderr)
+                logger.warning(f"API error (attempt {attempt+1}): {e}")
                 
                 if "429" in error_str or "quota" in error_str.lower():
                     time.sleep(60)

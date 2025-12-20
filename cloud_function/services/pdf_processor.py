@@ -7,11 +7,13 @@ import base64
 from typing import List, Dict, Any, Optional
 from googleapiclient.http import MediaIoBaseDownload
 from config import TOC_EXTRACTION_MODEL, TOC_IMAGE_DPI, TOC_SCAN_START_PAGE, TOC_SCAN_END_PAGE
+from services.logging_service import get_logger
 
 class PdfProcessor:
     def download_file_to_temp(self, drive_service, file_id: str, file_name: str) -> str:
         """Downloads file content from Google Drive to a temporary file."""
-        print(f"Starting download for {file_name} ({file_id})")
+        logger = get_logger()
+        logger.info(f"Starting download for {file_name} ({file_id})")
         request = drive_service.files().get_media(fileId=file_id)
         
         # Use a temp file path - simpler than NamedTemporaryFile for windows/unix compat in cloud run
@@ -23,14 +25,15 @@ class PdfProcessor:
             while done is False:
                 status, done = downloader.next_chunk()
                 if status:
-                    print(f"Download progress: {int(status.progress() * 100)}%")
+                    logger.debug(f"Download progress: {int(status.progress() * 100)}%")
                     
-        print(f"Download complete: {temp_path}")
+        logger.info(f"Download complete: {temp_path}")
         return temp_path
 
     def extract_text_from_pdf_file(self, pdf_path: str) -> str:
         """Extracts text from PDF file path using pypdf (Pure Python)."""
-        print(f"Extracting text from: {pdf_path}")
+        logger = get_logger()
+        logger.info(f"Extracting text from: {pdf_path}")
         reader = pypdf.PdfReader(pdf_path)
         text_parts = []
         
@@ -41,14 +44,14 @@ class PdfProcessor:
                 if text:
                     text_parts.append(text)
             except Exception as e:
-                print(f"Warning: Failed to extract text from page {i}: {e}")
+                logger.warning(f"Failed to extract text from page {i}: {e}")
                 
         full_text = "".join(text_parts)
         
         # Clean OCR noise
         full_text = self.clean_extracted_text(full_text)
         
-        print(f"Text extraction complete. Length: {len(full_text)} chars")
+        logger.info(f"Text extraction complete. Length: {len(full_text)} chars")
         return full_text
 
     def clean_extracted_text(self, text: str) -> str:
@@ -82,17 +85,18 @@ class PdfProcessor:
         primary_pattern = r'(?:^|[\n\r]+)\s*(?:第\s*([0-9０-９一二三四五六七八九十百壱弐参]+)\s*[部章編節]|(?:Chapter|CHAPTER|Part|PART|パート)\s*([0-9０-９IVXivx]+))[　\s:：\-−—.．]*([^\n\r]{0,80})'
         
         matches = list(re.finditer(primary_pattern, text, re.IGNORECASE))
-        print(f"Chapter detection (primary): Found {len(matches)} chapters/parts")
+        logger = get_logger()
+        logger.debug(f"Chapter detection (primary): Found {len(matches)} chapters/parts")
         for m in matches[:10]:  # Log first 10 matches
-            print(f"  - Detected: {m.group(0).strip()[:60]}...")
+            logger.debug(f"  - Detected: {m.group(0).strip()[:60]}...")
         
         # Fallback: If only 0-1 chapters detected, try more lenient pattern
         if len(matches) <= 1:
-            print("Warning: Only 0-1 chapters detected. Trying fallback pattern...")
+            logger.warning("Only 0-1 chapters detected. Trying fallback pattern...")
             # More lenient pattern - just looks for 第X部 or 第X章 anywhere
             fallback_pattern = r'第\s*[0-9０-９一二三四五六七八九十壱弐参]+\s*[部章]'
             fallback_positions = [(m.start(), m.group()) for m in re.finditer(fallback_pattern, text)]
-            print(f"  Fallback pattern found {len(fallback_positions)} matches")
+            logger.debug(f"  Fallback pattern found {len(fallback_positions)} matches")
             
             if len(fallback_positions) > len(matches):
                 # Use fallback matches to split the text
@@ -105,7 +109,7 @@ class PdfProcessor:
                     title_extended = text[pos:min(pos+100, len(text))].split('\n')[0].strip()
                     if content:
                         chapters.append({"title": title_extended, "content": content})
-                        print(f"  [Fallback] Chapter '{title_extended[:40]}...' has {len(content)} chars")
+                        logger.debug(f"  [Fallback] Chapter '{title_extended[:40]}...' has {len(content)} chars")
                 
                 if chapters:
                     return chapters
@@ -113,7 +117,7 @@ class PdfProcessor:
         # Process primary matches
         chapters = []
         if not matches:
-            print("Warning: No chapters detected, treating entire text as one chapter")
+            logger.warning("No chapters detected, treating entire text as one chapter")
             chapters.append({"title": "Full Text", "content": text})
             return chapters
 
@@ -124,11 +128,11 @@ class PdfProcessor:
             content = text[start:end].strip()
             if content:
                 chapters.append({"title": title, "content": content})
-                print(f"  Chapter '{title[:40]}...' has {len(content)} chars")
+                logger.debug(f"  Chapter '{title[:40]}...' has {len(content)} chars")
                 
         return chapters
 
-    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: int = None) -> Optional[Dict]:
+    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: Optional[int] = None) -> Optional[Dict]:
         """
         Extracts TOC structure using Gemini Vision API.
         Converts first few pages to images and asks Gemini to parse content.
@@ -141,8 +145,9 @@ class PdfProcessor:
             override_end_page: Optional override for TOC_SCAN_END_PAGE
         """
         scan_end = override_end_page if override_end_page else TOC_SCAN_END_PAGE
-        print("Starting Vision-based TOC extraction...")
-        print(f"  Config: Model={TOC_EXTRACTION_MODEL}, DPI={TOC_IMAGE_DPI}, Pages={TOC_SCAN_START_PAGE+1}-{scan_end}")
+        logger = get_logger()
+        logger.info("Starting Vision-based TOC extraction...")
+        logger.info(f"  Config: Model={TOC_EXTRACTION_MODEL}, DPI={TOC_IMAGE_DPI}, Pages={TOC_SCAN_START_PAGE+1}-{scan_end}")
         
         error_details = None
         
@@ -156,7 +161,7 @@ class PdfProcessor:
             end_page = min(scan_end, total_pages)
             
             images = []
-            print(f"Converting pages {start_page+1}-{end_page} to images (DPI={TOC_IMAGE_DPI})...")
+            logger.info(f"Converting pages {start_page+1}-{end_page} to images (DPI={TOC_IMAGE_DPI})...")
             
             for i in range(start_page, end_page):
                 page = doc[i]
@@ -217,7 +222,7 @@ class PdfProcessor:
             
             if not result:
                 error_details = {"stage": "api_call", "error": "Vision API returned None"}
-                print("Vision TOC extraction returned None")
+                logger.warning("Vision TOC extraction returned None")
                 self._save_toc_error(gcs_service, job_id, error_details)
                 return None
                 
@@ -247,7 +252,7 @@ class PdfProcessor:
             result["chapters_in_this_volume"] = chapters
             
             # ALWAYS Save debug info for analysis
-            print(f"Vision TOC extraction success: Found {len(chapters)} chapters. Saving debug info...")
+            logger.info(f"Vision TOC extraction success: Found {len(chapters)} chapters. Saving debug info...")
             self._save_toc_error(gcs_service, job_id, {
                 "stage": "extraction_result",
                 "extracted_chapters_count": len(chapters),
@@ -263,8 +268,7 @@ class PdfProcessor:
                 "error": str(e),
                 "traceback": traceback.format_exc()
             }
-            print(f"Error in extract_toc_with_ai: {e}")
-            traceback.print_exc()
+            logger.error(f"Error in extract_toc_with_ai: {e}")
             self._save_toc_error(gcs_service, job_id, error_details)
             return None
     
@@ -286,16 +290,14 @@ class PdfProcessor:
                 json.dumps(existing, ensure_ascii=False, indent=2),
                 content_type="application/json"
             )
-            print(f"Saved TOC error details to jobs/{job_id}/errors.json")
+            get_logger().debug(f"Saved TOC error details to jobs/{job_id}/errors.json")
         except Exception as e:
-            print(f"Warning: Failed to save error details: {e}")
+            get_logger().warning(f"Failed to save error details: {e}")
 
     def extract_chapters_from_toc(self, pdf_path: str, toc_data: Dict) -> List[Dict[str, str]]:
-        """
-        Extracts text for chapters based on TOC page ranges.
-        Uses pypdf for text extraction.
-        """
-        print("Extracting chapters based on Vision TOC data...")
+        """Extracts text for chapters based on TOC page ranges."""
+        logger = get_logger()
+        logger.info("Extracting chapters based on Vision TOC data...")
         reader = pypdf.PdfReader(pdf_path)
         total_pages = len(reader.pages)
         
@@ -311,7 +313,7 @@ class PdfProcessor:
             end_page = ch.get("content_end_page")
             
             if not isinstance(start_page, int) or not isinstance(end_page, int):
-                print(f"Skipping {full_title}: Invalid page range {start_page}-{end_page}")
+                logger.warning(f"Skipping {full_title}: Invalid page range {start_page}-{end_page}")
                 continue
                 
             # Convert 1-based page numbers to 0-based indices
@@ -329,7 +331,7 @@ class PdfProcessor:
                     if text:
                         chapter_text_parts.append(text)
                 except Exception as e:
-                    print(f"Warning extracting page {i+1}: {e}")
+                    logger.warning(f"Error extracting page {i+1}: {e}")
             
             full_text = "".join(chapter_text_parts)
             full_text = self.clean_extracted_text(full_text)
@@ -339,6 +341,6 @@ class PdfProcessor:
                     "title": full_title,
                     "content": full_text
                 })
-                print(f"  Extracted '{full_title}' ({start_page}-{end_page}): {len(full_text)} chars")
+                logger.debug(f"  Extracted '{full_title}' ({start_page}-{end_page}): {len(full_text)} chars")
                 
         return extracted_chapters

@@ -34,6 +34,8 @@ from services.gcs_service import GcsService
 from services.gemini_service import GeminiService
 from services.index_service import IndexService, ConceptNormalizer
 from services.analysis_service import AnalysisService
+from services.logging_service import JobLogger, get_logger, set_global_job_id
+from services.job_tracker import JobTracker
 
 # Import task handlers for routing
 from tasks.chapter_worker import process_chapter
@@ -56,10 +58,16 @@ def main_http_entry(request):
     if path == "/" or path.endswith("/process_book"):
         return process_book(request)
     elif path.endswith("/prepare_book"):
+        data = request.get_json(silent=True) or {}
+        set_global_job_id(data.get('job_id'))
         return prepare_book(request)
     elif path.endswith("/process_chapter"):
+        data = request.get_json(silent=True) or {}
+        set_global_job_id(data.get('job_id'))
         return process_chapter(request)
     elif path.endswith("/finalize_book"):
+        data = request.get_json(silent=True) or {}
+        set_global_job_id(data.get('job_id'))
         return finalize_book(request)
     elif path.endswith("/process_gcs_inbox"):
         return process_gcs_inbox(request)
@@ -101,7 +109,7 @@ def _create_cloud_task(
         task["schedule_time"] = timestamp
     
     response = client.create_task(parent=queue_path, task=task)
-    print(f"Created task: {response.name}")
+    get_logger().debug(f"Created task: {response.name}")
     return response.name
 
 
@@ -129,8 +137,11 @@ def process_book(request):
         category = request_json.get('category', 'Business')
         job_id = str(uuid.uuid4())
         
+        set_global_job_id(job_id)
+        logger = JobLogger(job_id)
+        
         logger.info("New book processing request", 
-                   job_id=job_id, file_id=file_id, category=category)
+                   file_id=file_id, category=category)
         
         # Enqueue preparation task
         gcs = GcsService()
@@ -176,6 +187,7 @@ def prepare_book(request):
         job_id = data.get('job_id')
         
         # Initialize structured logger and job tracker
+        set_global_job_id(job_id)
         logger = JobLogger(job_id)
         logger.log_stage("prepare_book", "started", file_id=file_id, category=category)
         
