@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any
 
 import functions_framework
 import google.auth
+import sys
 from googleapiclient.discovery import build
 
 from config import (
@@ -37,6 +38,8 @@ from services.analysis_service import AnalysisService
 # Import task handlers for routing
 from tasks.chapter_worker import process_chapter
 from tasks.finalizer import finalize_book
+
+print("DEBUG: main.py - all modules imported successfully", file=sys.stderr)
 
 
 # ... imports ...
