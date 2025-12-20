@@ -73,11 +73,19 @@ function checkNewFiles() {
             }
             
           } else {
-             console.error(`  -> Cloud Function Error: ${JSON.stringify(result)}`);
+             const errorMsg = result.error || 'Unknown error';
+             console.error(`  -> Cloud Function Error: ${errorMsg}`);
+             sendErrorAlert('TRIGGER_CF_ERROR', errorMsg, { 
+               file_id: fileId, 
+               file_name: file.getName(), 
+               category: category 
+             });
           }
         } catch (e) {
           console.error(`Error processing ${file.getName()}: ${e}`);
-          console.error(e.stack);
+          sendErrorAlert('TRIGGER_FILE_PROCESSING_EXCEPTION', e.toString(), { 
+            file_name: file.getName() 
+          });
         }
       }
     } catch (e) {
