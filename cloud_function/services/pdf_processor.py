@@ -246,19 +246,13 @@ class PdfProcessor:
             
             result["chapters_in_this_volume"] = chapters
             
-            # Warning if only 0-1 chapters detected
-            if len(chapters) <= 1:
-                warning_msg = f"⚠️ Vision TOC extracted only {len(chapters)} chapter(s) - this may indicate extraction failure"
-                print(warning_msg)
-                # Save debug info even for non-error cases
-                self._save_toc_error(gcs_service, job_id, {
-                    "stage": "validation",
-                    "warning": warning_msg,
-                    "extracted_chapters": len(chapters),
-                    "raw_result": result
-                })
-            else:
-                print(f"Vision TOC extraction success: Found {len(chapters)} chapters (sorted by page)")
+            # ALWAYS Save debug info for analysis
+            print(f"Vision TOC extraction success: Found {len(chapters)} chapters. Saving debug info...")
+            self._save_toc_error(gcs_service, job_id, {
+                "stage": "extraction_result",
+                "extracted_chapters_count": len(chapters),
+                "raw_result": result
+            })
             
             return result
             
