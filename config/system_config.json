@@ -3,8 +3,8 @@
     "description": "Book Summary System - Unified Configuration (GCS Single Source of Truth)",
     "cloud_function_url": "https://asia-northeast1-gen-lang-client-0341760389.cloudfunctions.net/process-book/process_book",
     "gemini": {
-        "model_id": "gemini-2.0-flash",
-        "toc_extraction_model": "gemini-2.0-flash-exp",
+        "model_id": "gemini-2.5-flash",
+        "toc_extraction_model": "gemini-2.5-flash",
         "temperature": 0.2
     },
     "folders": {
@@ -31,7 +31,7 @@
         "batch_delay_seconds": 30
     },
     "cloud_tasks": {
-        "region": "us-central1",
+        "region": "asia-northeast1",
         "queue_name": "book-summary-queue",
         "chapter_delay_seconds": 60
     },

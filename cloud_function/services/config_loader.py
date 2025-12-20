@@ -111,8 +111,8 @@ class ConfigLoader:
         return {
             "version": "1.0",
             "gemini": {
-                "model_id": "gemini-2.0-flash",
-                "toc_extraction_model": "gemini-2.0-flash-exp"
+                "model_id": "gemini-2.5-flash",
+                "toc_extraction_model": "gemini-2.5-flash"
             },
             "processing": {
                 "toc_scan_start_page": 3,

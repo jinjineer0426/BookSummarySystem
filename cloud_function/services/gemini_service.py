@@ -18,8 +18,8 @@ class GeminiService:
             raise ValueError("GEMINI_API_KEY is not set.")
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-            # Use gemini-2.0-flash-exp for high quality extraction
-            self.model_name = 'gemini-2.0-flash-exp'
+            # Use gemini-2.5-flash for higher quota limits
+            self.model_name = 'gemini-2.5-flash'
             self.embedding_model = "models/text-embedding-004"
             print(f"DEBUG: GeminiService initialized with model {self.model_name}", file=sys.stderr)
         except Exception as e:

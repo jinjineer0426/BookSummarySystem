@@ -64,7 +64,7 @@ def get_config_value(key_path: str, env_var: str = None, default=None):
 TOC_EXTRACTION_MODEL = get_config_value(
     "gemini.toc_extraction_model",
     "TOC_EXTRACTION_MODEL",
-    "gemini-2.0-flash-exp"
+    "gemini-2.5-flash"
 )
 
 # DPI for converting PDF pages to images (lower = less memory, 100 is sufficient for TOC)
