@@ -1,6 +1,7 @@
 {
     "version": "1.0",
     "description": "Book Summary System - Unified Configuration (GCS Single Source of Truth)",
+    "cloud_function_url": "https://asia-northeast1-gen-lang-client-0341760389.cloudfunctions.net/process-book/process_book",
     "gemini": {
         "model_id": "gemini-2.0-flash",
         "toc_extraction_model": "gemini-2.0-flash-exp",
@@ -8,20 +9,18 @@
     },
     "folders": {
         "source_folders": {
-            "Humanities/Business": "",
-            "Technical": "",
-            "Manga": "",
-            "Novel": ""
+            "Humanities/Business": "1phsKsbiSwbwq2dfx-ceBbTE_ZNntH3kK",
+            "Technical": "1O1xWyWydWwnNhIWnhWpwf8xKNjzlyqrq"
         },
         "destination_folders": {
-            "Manga": "",
-            "Novel": "",
-            "Humanities/Business": "",
-            "Technical": "",
-            "Other": ""
+            "Manga": "1r041atGRTmmZFrBKkSK4vdDyy-JGs8QG",
+            "Novel": "1zRfNoiUAa-H2xlpC6F7ANunt4M3rvz4g",
+            "Humanities/Business": "1phsKsbiSwbwq2dfx-ceBbTE_ZNntH3kK",
+            "Technical": "1O1xWyWydWwnNhIWnhWpwf8xKNjzlyqrq",
+            "Other": "1oLNWXk1AsgOnWCFwnph6VNob4vw4Qzx8"
         },
-        "scan_raw_folder_id": "",
-        "fallback_folder_id": ""
+        "scan_raw_folder_id": "1wJuMCkafn86zk4SCcc1QOX-n1CsZfdBF",
+        "fallback_folder_id": "1YsZJAoB8qAwkKXXeEWOrP6H_JqxNM_Mm"
     },
     "processing": {
         "toc_scan_start_page": 3,
@@ -37,8 +36,8 @@
         "chapter_delay_seconds": 60
     },
     "notifications": {
-        "alert_email": "",
-        "enabled": false,
+        "alert_email": "sorehamuridayoooo@gmail.com",
+        "enabled": true,
         "alert_on_failure": true,
         "alert_on_completion": false
     },

@@ -153,6 +153,11 @@ async function main() {
         DriveApp.getFileById(pair.main.id).setTrashed(true);
       } catch (e) {
         console.error('  -> NG: ' + e.message);
+        sendErrorAlert('PDF_TOOL_PAIR_PROCESSING', e.message, { 
+          pair: pair.name, 
+          cover: pair.cover.name, 
+          main: pair.main.name 
+        });
       }
     }
 
@@ -199,6 +204,7 @@ async function main() {
         console.log('  -> OK');
       } catch (e) {
         console.error('  -> NG: ' + e.message);
+        sendErrorAlert('PDF_TOOL_STANDALONE_PROCESSING', e.message, { file: file.name });
       }
     }
     
