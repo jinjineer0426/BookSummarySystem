@@ -20,28 +20,42 @@ This guide explains how to deploy the Book Summary System to Google Cloud Platfo
     *   Create a folder named `config` inside the bucket.
     *   Upload `master_concepts.json` and `master_categories.json` from the `config/` directory on your machine to this `config/` folder in the bucket.
 
-## Step 2: Deploy Cloud Function
+## Step 2: Deploy to Cloud Run
 
-1.  Go to [Cloud Functions](https://console.cloud.google.com/functions).
-2.  Click **CREATE FUNCTION**.
-3.  **Configuration**:
-    *   **Environment**: 2nd gen.
-    *   **Function name**: `process_book`
-    *   **Region**: `asia-northeast1` (same as bucket).
-    *   **Trigger**: HTTPS (Allow unauthenticated invocations if you want to test easily, strictly speaking for GAS you might want OIDC, but for simplicity: "Allow unauthenticated" or ensure GAS sends identity token). *Recommendation: Require authentication and set up GAS to send ID token.*
-4.  **Runtime Variables**:
-    *   Add Environment Variables under "Runtime, build, connections and security settings":
-        *   `GCP_PROJECT_ID`: Your Project ID.
-        *   `GCS_BUCKET_NAME`: The bucket name you created in Step 1.
-        *   `GEMINI_API_KEY`: Your Gemini API Key (if using AI Studio key) or rely on Vertex AI (if using default credentials). *Code defaults to Vertex AI if key is dummy.*
-5.  **Code**:
-    *   **Runtime**: Python 3.10 (or newer).
-    *   **Entry point**: `main_http_entry` (Crucial: Do not use `process_book`, as we need the router)
-    *   **Source code**: Upload the files from `cloud_function/` (`main.py` and `requirements.txt`).
-6.  **Deploy**: Click Deploy and wait for it to finish.
-7.  **Copy URL**: Once deployed, copy the **Function URL** (e.g., `https://...cloudfunctions.net/process_book`).
+We use Cloud Run instead of Cloud Functions for better control over the environment and stability.
 
-## Step 3: Service Account (Permissions)
+1.  **Preparation**:
+    *   Ensure `Procfile` exists in `cloud_function/` with the following content:
+        ```procfile
+        web: functions-framework --target=main_http_entry --port=$PORT
+        ```
+2.  **Deployment Command**:
+    *   Open your terminal and navigate to the `cloud_function/` directory.
+    *   Run the following command (replace variables with your values):
+        ```bash
+        gcloud run deploy process-book \
+          --source . \
+          --region asia-northeast1 \
+          --allow-unauthenticated \
+          --update-env-vars "GCP_PROJECT_ID=your-project-id,GCS_BUCKET_NAME=your-bucket-name,GEMINI_API_KEY=your-key,GCP_REGION=asia-northeast1,CLOUD_TASKS_QUEUE=book-summary-queue,FUNCTION_URL=https://your-service-url..."
+        ```
+    *   *Note*: The first time you deploy, you won't have the `FUNCTION_URL`. Deploy once, get the URL, then redeploy with the correct `FUNCTION_URL`.
+
+3.  **Environment Variables**:
+    *   `GCP_PROJECT_ID`: Your Project ID.
+    *   `GCS_BUCKET_NAME`: The bucket name from Step 1.
+    *   `GEMINI_API_KEY`: Your Gemini API Key.
+    *   `CLOUD_TASKS_QUEUE`: Name of the queue (e.g., `book-summary-queue`).
+    *   `FUNCTION_URL`: The URL of the Cloud Run service itself (used for async callbacks).
+    *   `FUNCTION_TARGET`: Should be set to `main_http_entry`.
+
+4.  **Cloud Tasks Queue Setup**:
+    *   Create a queue if it doesn't exist:
+        ```bash
+        gcloud tasks queues create book-summary-queue --location=asia-northeast1
+        ```
+
+## Step 3: Service Account & Permissions
 
 The Cloud Function needs permission to access GCS and Drive.
 
