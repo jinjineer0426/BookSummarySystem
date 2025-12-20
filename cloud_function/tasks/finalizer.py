@@ -36,6 +36,7 @@ def finalize_book(request):
     Can also be triggered by a scheduler to check for completed jobs.
     """
     try:
+        request_json = request.get_json(silent=True) or {}
         job_id = request_json.get("job_id")
         
         # Initialize structured logger and job tracker

@@ -586,3 +586,6 @@ def analyze_concepts(request):
         traceback.print_exc()
         return json.dumps({"status": "error", "message": str(e)}), 500
 
+
+# Entry point alias for Cloud Functions
+router = main_http_entry
