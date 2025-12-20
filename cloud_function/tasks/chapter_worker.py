@@ -14,6 +14,8 @@ from typing import Dict, Any
 from config import BUCKET_NAME
 from services.gcs_service import GcsService
 from services.gemini_service import GeminiService
+from services.logging_service import JobLogger
+from services.job_tracker import JobTracker
 
 
 @functions_framework.http
@@ -45,14 +47,18 @@ def process_chapter(request):
         book_title = request_json.get("book_title", "Unknown")
         existing_concepts = request_json.get("existing_concepts", [])
         
+        # Initialize structured logger and job tracker
+        logger = JobLogger(job_id)
+        gcs = GcsService()
+        tracker = JobTracker(gcs, job_id)
+        
         if job_id is None or chapter_number is None:
-            print(f"Error: job_id or chapter_number missing. Keys: {request_json.keys()}")
+            logger.log_error("chapter_worker", "job_id or chapter_number missing", keys=list(request_json.keys()))
             return json.dumps({"error": "job_id and chapter_number required"}), 400
         
-        print(f"Processing chapter {chapter_number} for job {job_id}")
+        logger.log_stage("chapter_processing", "started", chapter_number=chapter_number, book_title=book_title)
         
-        # Initialize services
-        gcs = GcsService()
+        # Initialize gemini service
         gemini = GeminiService()
         
         # 1. Read chapter content from GCS
@@ -69,10 +75,12 @@ def process_chapter(request):
         )
         
         # 3. Save result to GCS
-        _save_chapter_result(gcs, job_id, chapter_number, summary_result)
+        _save_chapter_result(gcs, job_id, chapter_number, summary_result, logger)
         
         # 4. Update job status
-        _update_job_progress(gcs, job_id, chapter_number)
+        _update_job_progress(gcs, job_id, chapter_number, logger)
+        
+        logger.log_stage("chapter_processing", "completed", chapter_number=chapter_number)
         
         return json.dumps({
             "status": "success",
@@ -81,6 +89,8 @@ def process_chapter(request):
         }), 200
         
     except Exception as e:
+        if 'logger' in locals() and logger:
+            logger.log_error("chapter_worker", str(e), chapter_number=request_json.get("chapter_number"))
         import traceback
         traceback.print_exc()
         return json.dumps({"error": str(e)}), 500
@@ -148,17 +158,17 @@ def _generate_chapter_summary(
     return result
 
 
-def _save_chapter_result(gcs: GcsService, job_id: str, chapter_number: int, result: Dict):
+def _save_chapter_result(gcs: GcsService, job_id: str, chapter_number: int, result: Dict, logger: JobLogger):
     """Saves the chapter summary result to GCS."""
     blob = gcs.bucket.blob(f"jobs/{job_id}/chapter_{chapter_number}.json")
     blob.upload_from_string(
         json.dumps(result, ensure_ascii=False, indent=2),
         content_type="application/json"
     )
-    print(f"Saved chapter {chapter_number} result to GCS")
+    logger.logger.debug(f"Saved chapter {chapter_number} result to GCS")
 
 
-def _update_job_progress(gcs: GcsService, job_id: str, chapter_number: int):
+def _update_job_progress(gcs: GcsService, job_id: str, chapter_number: int, logger: JobLogger):
     """Updates the job metadata to track progress."""
     metadata_blob = gcs.bucket.blob(f"jobs/{job_id}/metadata.json")
     
@@ -174,4 +184,4 @@ def _update_job_progress(gcs: GcsService, job_id: str, chapter_number: int):
         json.dumps(metadata, ensure_ascii=False, indent=2),
         content_type="application/json"
     )
-    print(f"Updated job {job_id} progress: {len(metadata['completed_chapters'])} chapters done")
+    logger.logger.debug(f"Updated job {job_id} progress: {len(metadata['completed_chapters'])} chapters done")

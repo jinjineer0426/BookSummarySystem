@@ -151,3 +151,13 @@ class JobLogger:
             value=value,
             **kwargs
         )
+# Global logger instance for shared services
+_global_logger = StructuredLogger()
+
+def set_global_job_id(job_id: str):
+    """Set the job ID for the global logger."""
+    _global_logger.job_id = job_id
+
+def get_logger() -> StructuredLogger:
+    """Get the global structured logger."""
+    return _global_logger
