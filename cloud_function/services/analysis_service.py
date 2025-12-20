@@ -37,7 +37,8 @@ class AnalysisService:
             "status": "success",
             "message": "Weekly report published",
             "file_path": filename,
-            "gcs_uri": gcs_uri
+            "gcs_uri": gcs_uri,
+            "report": report_data
         }
 
     def analyze(self) -> Dict[str, Any]:
