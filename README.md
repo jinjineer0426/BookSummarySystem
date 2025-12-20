@@ -61,7 +61,20 @@ BookSummarySystem/
 │   ├── PDFTool.gs        # PDFの処理と自動整理
 │   └── Trigger.gs        # ワークフロー全体の制御
 └── docs/                  # ドキュメント・アセット
+    ├── ARCHITECTURE.md    # システム全体構成
+    ├── PDF_PROCESSING_FLOW.md  # PDF処理の分岐ロジック
+    └── TOC_EXTRACTION.md  # 目次抽出ロジック
 ```
+
+## 技術ドキュメント
+
+処理ロジックの詳細は以下を参照してください：
+
+| ドキュメント | 内容 |
+| :--- | :--- |
+| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | システム全体の構成とコンポーネント一覧 |
+| [PDF_PROCESSING_FLOW.md](./docs/PDF_PROCESSING_FLOW.md) | PDFTool.gsの分類・結合・振り分けロジック |
+| [TOC_EXTRACTION.md](./docs/TOC_EXTRACTION.md) | Vision AI / 正規表現による目次抽出フロー |
 
 ## セットアップとデプロイ
 
