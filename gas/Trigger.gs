@@ -23,9 +23,11 @@ function getConfig_() {
     CLOUD_FUNCTION_URL: config.cloud_function_url || 
                         props.getProperty('CLOUD_FUNCTION_URL') || '',
     
-    // Spreadsheet for tracking (still from Script Properties - local resource)
-    PROCESSED_SHEET_ID: props.getProperty('PROCESSED_SHEET_ID') || '',
-    LOG_SHEET_NAME: props.getProperty('LOG_SHEET_NAME') || 'log'
+    // Spreadsheet for tracking (from GCS config or Script Properties fallback)
+    PROCESSED_SHEET_ID: config.trigger?.processed_sheet_id || 
+                        props.getProperty('PROCESSED_SHEET_ID') || '',
+    LOG_SHEET_NAME: config.trigger?.log_sheet_name || 
+                    props.getProperty('LOG_SHEET_NAME') || 'log'
   };
 }
 
