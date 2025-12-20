@@ -4,27 +4,28 @@ import json
 import re
 import ssl
 from typing import Optional, Dict, Any, List
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from config import GEMINI_API_KEY
 
 class GeminiService:
     def __init__(self):
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not set.")
-        genai.configure(api_key=GEMINI_API_KEY)
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.model_name = 'gemini-2.5-flash'
-        self.embedding_model = "models/text-embedding-004"
+        self.embedding_model = "text-embedding-004"
 
     def generate_content(self, content: Any, max_retries: int = 3, model_name: Optional[str] = None) -> Optional[Dict]:
         """Call Gemini with retry logic including SSL error handling. Content can be str or list (for vision)."""
         target_model = model_name if model_name else self.model_name
-        model = genai.GenerativeModel(target_model)
         
         for attempt in range(max_retries):
             try:
-                response = model.generate_content(
-                    content,
-                    generation_config=genai.GenerationConfig(
+                response = self.client.models.generate_content(
+                    model=target_model,
+                    contents=content,
+                    config=types.GenerateContentConfig(
                         temperature=0.2,
                         max_output_tokens=8192,
                         response_mime_type="application/json"
@@ -73,9 +74,11 @@ class GeminiService:
 
     def get_embedding(self, text: str) -> List[float]:
         """Get text embedding."""
-        result = genai.embed_content(
+        result = self.client.models.embed_content(
             model=self.embedding_model,
-            content=text,
-            task_type="semantic_similarity"
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type="SEMANTIC_SIMILARITY"
+            )
         )
-        return result['embedding']
+        return result.embeddings[0].values
