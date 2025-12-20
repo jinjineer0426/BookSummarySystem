@@ -19,4 +19,8 @@ venv/
 
 # Scripts Temporary/Test Artifacts
 scripts/*.json
-temp_cleanup/
+# Node.js
+node_modules/
+
+# clasp
+.clasprc.json

@@ -1,0 +1,11 @@
+# clasp ignore file
+# Since rootDir is set to ./gas, only files inside that dir are pushed.
+# This file can be used to ignore specific files inside ./gas if needed.
+node_modules/
+.git/
+.clasp.json
+.claspignore
+package.json
+package-lock.json
+README.md
+docs/
