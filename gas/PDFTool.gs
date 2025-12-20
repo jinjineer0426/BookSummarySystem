@@ -73,10 +73,11 @@ async function main() {
     
     // 2. 分類とペア作成
     const pairing = classifyAndPairPdfs(pdfList);
-    console.log('作成されたペア数: ' + pairing.pairs.length + '件');
+    const totalItems = pairing.pairs.length + pairing.standalones.length;
+    console.log(`検出: ペア ${pairing.pairs.length}件, スタンドアロン ${pairing.standalones.length}件`);
     
-    if (pairing.pairs.length === 0) {
-      console.log('結合可能なペアが見つかりませんでした。終了します。');
+    if (totalItems === 0) {
+      console.log('処理可能なファイルが見つかりませんでした。終了します。');
       return;
     }
     
@@ -100,60 +101,88 @@ async function main() {
         let combinedName = pair.key; // Default name
         let targetFolderId = fallbackFolder.getId();
         
-        console.log(`処理中: ${pair.name} (表紙: ${pair.cover.name}, 本紙: ${pair.main.name})`);
+        console.log(`処理中(ペア): ${pair.name} (表紙: ${pair.cover.name}, 本紙: ${pair.main.name})`);
         
-        // バイナリデータの取得 (50MB制限回避のためチャンクダウンロード)
         const coverBytes = downloadBytes(pair.cover.id, pair.cover.size);
         const mainBytes = downloadBytes(pair.main.id, pair.main.size);
         
-        // --- Gemini Integration ---
         if (apiKey) {
-           // PDFとして直接アップロードして解析する (バイト列を使用)
-           const analysis = analyzeCoverWithGemini(coverBytes, apiKey);
+           const analysis = analyzePdfWithGemini(coverBytes, apiKey);
            if (analysis) {
              console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
              combinedName = constructFileName(analysis).replace(/\.pdf$/i, '');
              
              const mappedFolderId = GEMINI_CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
-             if (mappedFolderId && mappedFolderId.length > 5) { // Check if it's a valid ID (more than just placeholder)
+             if (mappedFolderId && mappedFolderId.length > 5) {
                targetFolderId = mappedFolderId;
                console.log(`  -> 振分け先: ${analysis.category} (${targetFolderId})`);
-             } else {
-               console.warn(`  -> 警告: カテゴリ '${analysis.category}' のフォルダIDが設定されていません。デフォルトフォルダに保存します。`);
              }
-           } else {
-             console.log('  -> AI分析スキップまたは失敗。デフォルトのファイル名とフォルダを使用します。');
            }
         }
-        // --------------------------
         
-        // 結合処理 (async function call)
         const pdfBytes = await mergeAndRotatePdf(coverBytes, mainBytes);
-        
-        // 保存 (50MB以上対応のためResumable Uploadを使用)
         const outputFileId = saveLargeFile(targetFolderId, combinedName + '.pdf', pdfBytes);
         const outputFile = DriveApp.getFileById(outputFileId);
-        
-        // 説明文設定
-        const desc = `【自動結合】\n表紙: ${pair.cover.name}\n本紙: ${pair.main.name}`;
-        outputFile.setDescription(desc);
+        outputFile.setDescription(`【自動結合】\n表紙: ${pair.cover.name}\n本紙: ${pair.main.name}`);
         
         successCount++;
         console.log('  -> OK');
         
-        // 元ファイルの削除 (ゴミ箱へ移動)
         DriveApp.getFileById(pair.cover.id).setTrashed(true);
         DriveApp.getFileById(pair.main.id).setTrashed(true);
-        console.log('  -> 元ファイルを削除(ゴミ箱へ移動)しました');
-        
       } catch (e) {
         console.error('  -> NG: ' + e.message);
-        console.error(e.stack);
+      }
+    }
+
+    // 4. スタンドアロン処理
+    console.log('スタンドアロンファイルの処理を開始します...');
+    for (const file of pairing.standalones) {
+      try {
+        let fileName = file.name.replace(/\.pdf$/i, '');
+        let targetFolderId = fallbackFolder.getId();
+        
+        console.log(`処理中(単体): ${file.name}`);
+        
+        const fileBytes = downloadBytes(file.id, file.size);
+        
+        if (apiKey) {
+           const analysis = analyzePdfWithGemini(fileBytes, apiKey);
+           if (analysis) {
+             console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
+             fileName = constructFileName(analysis).replace(/\.pdf$/i, '');
+             
+             const mappedFolderId = GEMINI_CONFIG.DESTINATION_FOLDER_IDS[analysis.category];
+             if (mappedFolderId && mappedFolderId.length > 5) {
+               targetFolderId = mappedFolderId;
+               console.log(`  -> 振分け先: ${analysis.category} (${targetFolderId})`);
+             }
+           }
+        }
+        
+        // 単体ファイルの場合は回転・結合なしで移動・リネームのみ
+        const newFile = DriveApp.getFileById(file.id);
+        newFile.setName(fileName + '.pdf');
+        
+        // フォルダ移動
+        const currentParents = newFile.getParents();
+        while (currentParents.hasNext()) {
+          const parent = currentParents.next();
+          parent.removeFile(newFile);
+        }
+        DriveApp.getFolderById(targetFolderId).addFile(newFile);
+        
+        newFile.setDescription(`【単体処理】元ファイル名: ${file.name}`);
+        
+        successCount++;
+        console.log('  -> OK');
+      } catch (e) {
+        console.error('  -> NG: ' + e.message);
       }
     }
     
     console.log('--------------------------------------------------');
-    console.log('処理完了: ' + successCount + ' / ' + pairing.pairs.length + ' 件成功');
+    console.log('処理完了: ' + successCount + ' / ' + totalItems + ' 件成功');
     
   } catch (e) {
     console.error('予期せぬエラーが発生しました: ' + e.toString());
@@ -315,11 +344,10 @@ function downloadBytes(fileId, size) {
 function classifyAndPairPdfs(pdfList) {
   const covers = {};
   const mains = {};
+  const standalones = [];
   
   // 正規表現の定義
-  // Cover: YYYY-MM-DD or YYYY-MM-DD_XXX
   const coverRegex = /^(\d{4})-(\d{2})-(\d{2})(?:_(.+))?\.pdf$/;
-  // Main: YYYYMMDD or YYYYMMDD_XXX
   const mainRegex = /^(\d{4})(\d{2})(\d{2})(?:_(.+))?\.pdf$/;
   
   pdfList.forEach(pdf => {
@@ -336,21 +364,37 @@ function classifyAndPairPdfs(pdfList) {
       mains[key] = pdf;
       return;
     }
+
+    // いずれにもマッチしない場合はスタンドアロン
+    standalones.push(pdf);
   });
   
   const pairs = [];
+  const processedKeys = new Set();
+
   Object.keys(mains).forEach(key => {
     if (covers[key]) {
       pairs.push({ 
         key: key, 
-        name: key, // Display name
+        name: key, 
         cover: covers[key], 
         main: mains[key]
       });
+      processedKeys.add(key);
+    } else {
+      // 本紙のみで表紙がない場合もスタンドアロンとして扱う
+      standalones.push(mains[key]);
+    }
+  });
+
+  // 表紙のみで本紙がない場合もスタンドアロンとして扱う
+  Object.keys(covers).forEach(key => {
+    if (!processedKeys.has(key)) {
+      standalones.push(covers[key]);
     }
   });
   
-  return { pairs: pairs };
+  return { pairs: pairs, standalones: standalones };
 }
 
 function getOrCreateFolder(parent, name) {
@@ -371,12 +415,12 @@ function identifyPdfType(filename) {
  * Utilities.newBlobからのgetAsは失敗しやすいため、DriveAppから直接取得する
  */
 /**
- * Geminiで表紙PDFを分析する (File APIを使用)
+ * GeminiでPDFを分析する (File APIを使用)
  */
-function analyzeCoverWithGemini(coverBytes, apiKey) {
+function analyzePdfWithGemini(pdfBytes, apiKey) {
   try {
     // 1. PDF Blobを作成
-    const coverBlob = Utilities.newBlob(coverBytes, 'application/pdf', 'cover.pdf');
+    const coverBlob = Utilities.newBlob(pdfBytes, 'application/pdf', 'cover.pdf');
     
     // 2. Geminiへアップロード (File API)
     const fileUri = uploadBlobToGemini_(coverBlob, apiKey);
