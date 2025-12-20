@@ -48,6 +48,10 @@
     "refactor_job": {
         "analyze_url": "https://asia-northeast1-gen-lang-client-0341760389.cloudfunctions.net/process-book/analyze_concepts"
     },
+    "trigger": {
+        "processed_sheet_id": "18Atya7cL1QN6NNo1mgisUKLsgJ6aj4pzBsrBp-zZPmQ",
+        "log_sheet_name": "log"
+    },
     "clip_processor": {
         "inbox_folder_id": "1IEnNn2Fp0nK_QN19DX080FRppc0h4Zsy",
         "gcs_bucket": "obsidian_vault_sync_my_knowledge",
