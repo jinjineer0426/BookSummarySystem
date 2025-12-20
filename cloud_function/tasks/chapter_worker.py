@@ -118,6 +118,7 @@ def _generate_chapter_summary(
     
     prompt = f"""
     Analyze this chapter and provide a detailed summary in Japanese.
+    If the chapter focuses on a specific concept or person (dictionary style), start with a clear definition.
     
     Book Title: {book_title}
     Chapter Title: {title}
@@ -128,7 +129,7 @@ def _generate_chapter_summary(
     
     Output JSON:
     {{
-      "summary": "- Point 1\\n- Point 2\\n- Point 3\\n- Point 4\\n- Point 5 (5-7 detailed bullet points)",
+      "summary": "Definition or Introduction (1-2 sentences)\\n\\n- Point 1\\n- Point 2\\n- Point 3\\n- Point 4\\n- Point 5 (Key insights and business applications)",
       "keyConcepts": ["Concept1", "Concept2", "Concept3"]
     }}
     """
