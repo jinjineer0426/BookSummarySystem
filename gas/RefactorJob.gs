@@ -3,15 +3,25 @@
  * Weekly automated Concepts Index review trigger with email notification.
  */
 
-const ANALYZE_URL = PropertiesService.getScriptProperties().getProperty('ANALYZE_URL') || '';
+// === Configuration (Unified via ConfigService) ===
+function getRefactorConfig_() {
+  const config = new ConfigService().getConfig();
+  const props = PropertiesService.getScriptProperties();
+  
+  return {
+    ANALYZE_URL: config.refactor_job?.analyze_url || 
+                 props.getProperty('ANALYZE_URL') || ''
+  };
+}
 
 /**
  * Main function to be called by time-driven trigger.
  * Calls Cloud Function to analyze Concepts Index and sends email report.
  */
 function runWeeklyReview() {
+  const CONFIG = getRefactorConfig_();  // Load config
   try {
-    const response = UrlFetchApp.fetch(ANALYZE_URL, {
+    const response = UrlFetchApp.fetch(CONFIG.ANALYZE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       muteHttpExceptions: true
