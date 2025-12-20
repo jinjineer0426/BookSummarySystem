@@ -5,10 +5,18 @@
  * NOTE: This file uses CONFIG from Trigger.gs (same GAS project)
  */
 
-// GCS-specific configuration (uses CONFIG from Trigger.gs for spreadsheet settings)
-// GCS-specific configuration (uses CONFIG from Trigger.gs for spreadsheet settings)
-const GCS_BUCKET = PropertiesService.getScriptProperties().getProperty('GCS_BUCKET') || 'my-book-summary-config';
-const JOBS_PREFIX = 'jobs/';
+// === Configuration (Unified via ConfigService) ===
+function getGcsConfig_() {
+  const config = new ConfigService().getConfig();
+  const props = PropertiesService.getScriptProperties();
+  
+  return {
+    GCS_BUCKET: props.getProperty('GCS_BUCKET') || 
+                config.gcs?.bucket_name || 
+                'my-book-summary-config',
+    JOBS_PREFIX: 'jobs/'
+  };
+}
 
 /**
  * Syncs completed jobs from GCS to the spreadsheet.
@@ -62,8 +70,9 @@ function syncCompletedJobs() {
  * Much faster than listing all folders individually.
  */
 function listRecentMetadataObjects(hours) {
+  const CONFIG = getGcsConfig_();  // Load config
   const accessToken = ScriptApp.getOAuthToken();
-  const url = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?prefix=${JOBS_PREFIX}`;
+  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o?prefix=${CONFIG.JOBS_PREFIX}`;
   
   const response = UrlFetchApp.fetch(url, {
     headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -108,9 +117,10 @@ function updateRowInSheet(sheet, rowIndex, metadata, completedDate) {
  * Reads job metadata.json from GCS.
  */
 function readJobMetadata(jobId) {
+  const CONFIG = getGcsConfig_();  // Load config
   const accessToken = ScriptApp.getOAuthToken();
   const objectPath = `jobs/${jobId}/metadata.json`;
-  const url = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(objectPath)}?alt=media`;
+  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o/${encodeURIComponent(objectPath)}?alt=media`;
   
   const response = UrlFetchApp.fetch(url, {
     headers: { 'Authorization': `Bearer ${accessToken}` },

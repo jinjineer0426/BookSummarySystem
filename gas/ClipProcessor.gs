@@ -4,29 +4,38 @@
  * extracts concepts using Gemini, and creates Obsidian-compatible links.
  */
 
-// === Clip Processor Configuration ===
-const CLIP_CONFIG = {
-  // Google Drive Inbox Folder
-  INBOX_FOLDER_ID: '1IEnNn2Fp0nK_QN19DX080FRppc0h4Zsy',
+// === Configuration (Unified via ConfigService) ===
+/**
+ * Get clip processor configuration from ConfigService
+ */
+function getClipConfig_() {
+  const config = new ConfigService().getConfig();
+  const props = PropertiesService.getScriptProperties();
+  const clipConfig = config.clip_processor || {};
   
-  // Cloud Function URL for clip processing
-  CLIP_PROCESSOR_URL: '', // Will be set after deployment
-  
-  // GCS paths for output
-  GCS_BUCKET: 'obsidian_vault_sync_my_knowledge',
-  GCS_PATHS: {
-    INBOX: '10_Inbox/',
-    READING: '20_Reading/',
-    KNOWLEDGE: '30_Knowledge/'
-  },
-  
-  // Spreadsheet for tracking processed clips
-  PROCESSED_SHEET_ID: '18Atya7cL1QN6NNo1mgisUKLsgJ6aj4pzBsrBp-zZPmQ',
-  CLIP_LOG_SHEET_NAME: 'clip_log',
-  
-  // Gemini API Key (same as BookSummarySystem)
-  GEMINI_API_KEY: PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || ''
-};
+  return {
+    // Google Drive Inbox Folder
+    INBOX_FOLDER_ID: clipConfig.inbox_folder_id || '1IEnNn2Fp0nK_QN19DX080FRppc0h4Zsy',
+    
+    // Cloud Function URL for clip processing (future use)
+    CLIP_PROCESSOR_URL: clipConfig.processor_url || '',
+    
+    // GCS paths for output
+    GCS_BUCKET: clipConfig.gcs_bucket || 'obsidian_vault_sync_my_knowledge',
+    GCS_PATHS: clipConfig.gcs_paths || {
+      INBOX: '10_Inbox/',
+      READING: '20_Reading/',
+      KNOWLEDGE: '30_Knowledge/'
+    },
+    
+    // Spreadsheet for tracking processed clips
+    PROCESSED_SHEET_ID: clipConfig.processed_sheet_id || '18Atya7cL1QN6NNo1mgisUKLsgJ6aj4pzBsrBp-zZPmQ',
+    CLIP_LOG_SHEET_NAME: clipConfig.clip_log_sheet_name || 'clip_log',
+    
+    // Gemini API Key (from Script Properties for security)
+    GEMINI_API_KEY: props.getProperty('GEMINI_API_KEY') || ''
+  };
+}
 
 // === Main Functions ===
 
@@ -35,6 +44,7 @@ const CLIP_CONFIG = {
  * Called by time-based trigger
  */
 function checkNewClips() {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   const processedIds = getProcessedClipIds();
   
   try {
@@ -85,6 +95,7 @@ function checkNewClips() {
  * @param {boolean} force - If true, reprocess even already processed clips
  */
 function batchProcessExistingClips(force = true) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   const processedIds = force ? new Set() : getProcessedClipIds();
   
   try {
@@ -141,6 +152,8 @@ function batchProcessExistingClips(force = true) {
  * @returns {Object} Processing result
  */
 function processClip(fileId) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
+  
   // 1. Read clip content from Drive
   const file = DriveApp.getFileById(fileId);
   const content = file.getBlob().getDataAsString('UTF-8');
@@ -260,6 +273,7 @@ function parseClipContent(content) {
  * @returns {Object} Extraction result with concepts and summary
  */
 function extractConceptsWithGemini(content, metadata) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   if (!CLIP_CONFIG.GEMINI_API_KEY) {
     return {
       success: false,
@@ -352,6 +366,7 @@ ${content.substring(0, 10000)}
  * @returns {Array} Matched/normalized concepts
  */
 function matchWithMasterConcepts(concepts) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   // Download master concepts from GCS
   const masterResult = downloadFromGcs(CLIP_CONFIG.GCS_BUCKET, 'config/master_concepts.json');
   
@@ -404,6 +419,7 @@ function matchWithMasterConcepts(concepts) {
  * @returns {Array} Related book titles
  */
 function findRelatedBooks(concepts) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   // Download concepts index from GCS
   const indexResult = downloadFromGcs(
     CLIP_CONFIG.GCS_BUCKET, 
@@ -488,6 +504,7 @@ ${summary}
  * @param {string} clipTitle - Clip title for reference
  */
 function updateConceptsIndexWithClip(concepts, clipTitle) {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   const indexPath = `${CLIP_CONFIG.GCS_PATHS.KNOWLEDGE}00_Concepts_Index.md`;
   
   // Download existing index
@@ -571,6 +588,7 @@ function markClipAsProcessed(fileId, fileName, result) {
  * Gets or creates the clip log sheet
  */
 function getClipLogSheet() {
+  const CLIP_CONFIG = getClipConfig_();  // Load config
   const ss = SpreadsheetApp.openById(CLIP_CONFIG.PROCESSED_SHEET_ID);
   let sheet = ss.getSheetByName(CLIP_CONFIG.CLIP_LOG_SHEET_NAME);
   
