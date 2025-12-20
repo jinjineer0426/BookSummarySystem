@@ -43,7 +43,7 @@ function checkNewFiles() {
         try {
           const result = callCloudFunction(fileId, category);
           
-          if (result && !result.error && (result.status === 'success' || result.status === 'queued')) {
+          if (result && !result.error && (result.status === 'success' || result.status === 'queued' || result.status === 'accepted')) {
             // Cloud Function now writes directly to GCS or queues to Cloud Tasks
             // GAS only logs the result
             
@@ -57,8 +57,8 @@ function checkNewFiles() {
             
             markAsProcessed(fileId, file.getName(), category, logData);
             
-            if (result.status === 'queued') {
-              console.log(`  -> Queued: ${result.chapters} chapters, Job ID: ${result.job_id}`);
+            if (result.status === 'queued' || result.status === 'accepted') {
+              console.log(`  -> Accepted/Queued, Job ID: ${result.job_id}`);
             } else {
               console.log(`  -> Success: ${logData.title}`);
               console.log(`  -> GCS URI: ${logData.gcs_uri}`);
