@@ -26,8 +26,10 @@ flowchart LR
         C -->|Analyze Cover| D[Gemini API]
         C -->|Rename & Move| B
         B -->|New File| E[GAS: Trigger]
-        E -->|Request| F[Cloud Function]
-        F -->|Extract Text & Summary| D
+        E -->|Request| F[Cloud Run]
+        F -->|Async Tasks| I[Cloud Tasks]
+        I -->|Extraction & Summary| F
+        F -->|Prompt| D
     end
 
     subgraph Knowledge [Your Second Brain]
@@ -54,9 +56,11 @@ flowchart LR
 
 ```
 BookSummarySystem/
-├── cloud_function/        # Cloud Function層 (Python)
-│   ├── main.py           # Gemini処理の中核ロジック
-│   └── models/           # 書籍コンセプトのデータ構造
+├── cloud_function/        # Cloud Run サービス (Python)
+│   ├── main.py           # エントリポイント / ルーター
+│   ├── services/         # Gemini, GCS, PDF処理等のコアロジック
+│   ├── tasks/            # Cloud Tasks 用のワーカー (章要約, 統合処理)
+│   └── Procfile          # Cloud Run の起動定義
 ├── gas/                   # Google Apps Script層 (トリガーとドライブ管理)
 │   ├── PDFTool.gs        # PDFの処理と自動整理
 │   └── Trigger.gs        # ワークフロー全体の制御
