@@ -528,7 +528,7 @@ def analyze_concepts(request):
         gcs = GcsService()
         analyzer = AnalysisService(gcs)
         
-        result = analyzer.analyze()
+        result = analyzer.publish_weekly_report()
         
         return json.dumps(result, ensure_ascii=False), 200, {"Content-Type": "application/json; charset=utf-8"}
         

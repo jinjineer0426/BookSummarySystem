@@ -18,6 +18,28 @@ class AnalysisService:
         self.gcs = gcs_service
         self.index_path = "02_Knowledge/00_Concepts_Index.md"
     
+    def publish_weekly_report(self) -> Dict[str, Any]:
+        """Runs analysis and publishes a Markdown report to GCS."""
+        analysis_result = self.analyze()
+        
+        if analysis_result["status"] != "success":
+            return analysis_result
+            
+        report_data = analysis_result["report"]
+        markdown_content = self._format_markdown_report(report_data)
+        
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        filename = f"02_Knowledge/01_Weekly_Report/Weekly_Index_Report_{date_str}.md"
+        
+        gcs_uri = self.gcs.write_to_obsidian_vault(filename, markdown_content)
+        
+        return {
+            "status": "success",
+            "message": "Weekly report published",
+            "file_path": filename,
+            "gcs_uri": gcs_uri
+        }
+
     def analyze(self) -> Dict[str, Any]:
         """Runs the full analysis and returns a report."""
         content = self.gcs.read_obsidian_file(self.index_path)
@@ -50,6 +72,60 @@ class AnalysisService:
                 "last_updated": datetime.utcnow().isoformat() + "Z"
             }
         }
+
+    def _format_markdown_report(self, data: Dict[str, Any]) -> str:
+        """Formats the analysis report as Markdown."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        md = f"""---
+title: "Weekly Index Report {today}"
+date: {today}
+tags: [weekly_review, maintenance]
+---
+
+# Weekly Concepts Index Report ({today})
+
+## 📊 Overview
+- **Total Concepts**: {data.get('total_concepts', 0)}
+- **Last Updated**: {data.get('last_updated')}
+
+## 🧹 Maintenance Required
+
+### 1. Potential Duplicates (High Similarity)
+> Review these pairs. If they are synonyms, create an alias or merge them.
+
+"""
+        
+        duplicates = data.get("potential_duplicates", [])
+        if duplicates:
+            for item in duplicates:
+                c1, c2 = item["pair"]
+                score = item["similarity"]
+                md += f"- **{score:.2f}**: [[{c1}]] <--> [[{c2}]]\n"
+        else:
+            md += "- No obvious duplicates found.\n"
+            
+        md += "\n### 2. Japanese/English Notation Split\n"
+        md += "> These concepts exist separately but might refer to the same thing (e.g. 'Apple' vs 'Apple (Fruit)').\n\n"
+        
+        pairs = data.get("jp_en_pairs", [])
+        if pairs:
+            for item in pairs:
+                c1 = item["with_notation"]
+                c2 = item["without_notation"]
+                md += f"- [[{c1}]] <--> [[{c2}]]\n"
+        else:
+            md += "- No split pairs found.\n"
+            
+        md += "\n## 🔗 Top Hub Concepts\n"
+        md += "> Concepts with the most connections. Good candidates for MOCs (Map of Content).\n\n"
+        
+        hubs = data.get("hub_concepts", [])[:10]  # Top 10
+        if hubs:
+            for item in hubs:
+                md += f"- [[{item['name']}]] ({item['count']} links)\n"
+        
+        return md
     
     def _parse_concepts(self, content: str) -> Dict[str, set]:
         """Parses the index file and extracts concept -> sources mapping."""
