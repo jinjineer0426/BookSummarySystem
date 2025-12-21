@@ -20,29 +20,87 @@ function getGcsConfig_() {
 
 /**
  * Syncs completed jobs from GCS to the spreadsheet.
- * Optimized to only check recently updated files to stay within GAS limits.
+ * Enhanced to provide detailed status reporting for all jobs.
  */
 function syncCompletedJobs() {
   const sheet = getLogSheet();
   const fileIdMap = getFileIdMap(sheet);
   
   // Get metadata files updated in the last 72 hours (3 days)
-  // This provides a safe buffer for a daily trigger.
   const recentMetadataObjects = listRecentMetadataObjects(72);
   console.log(`Found ${recentMetadataObjects.length} recently updated metadata files in GCS`);
   
+  // Status tracking
+  const statusCounts = { complete: 0, completed: 0, processing: 0, failed: 0, queued: 0, unknown: 0 };
+  const processingJobs = [];
+  const failedJobs = [];
+  
   let syncedCount = 0;
+  let updatedCount = 0;
   
   for (const obj of recentMetadataObjects) {
-    // Extract jobId from path: "jobs/{jobId}/metadata.json"
     const pathParts = obj.name.split('/');
     if (pathParts.length < 2) continue;
     const jobId = pathParts[1];
     
-    // Read the actual content of the metadata.json
     const metadata = readJobMetadata(jobId);
-    if (!metadata || metadata.status !== 'complete') continue;
-
+    if (!metadata) continue;
+    
+    // Read status.json for detailed progress (may not exist)
+    const statusData = readJobStatus(jobId);
+    
+    // Determine effective status (status.json is more accurate if exists)
+    let effectiveStatus = 'unknown';
+    if (statusData && statusData.status) {
+      effectiveStatus = statusData.status;
+    } else if (metadata.status) {
+      effectiveStatus = metadata.status;
+    }
+    
+    // Count by status
+    if (statusCounts.hasOwnProperty(effectiveStatus)) {
+      statusCounts[effectiveStatus]++;
+    } else {
+      statusCounts.unknown++;
+    }
+    
+    // Track processing/queued jobs with progress
+    if (effectiveStatus === 'processing' || effectiveStatus === 'queued') {
+      const bookTitle = metadata.book_title || 'Unknown';
+      const totalChapters = metadata.total_chapters || 0;
+      const completedChapters = Array.isArray(metadata.completed_chapters) 
+        ? metadata.completed_chapters.length 
+        : 0;
+      
+      let progressStr = '';
+      if (statusData && statusData.details && statusData.details.progress) {
+        progressStr = statusData.details.progress;
+      } else if (totalChapters > 0) {
+        progressStr = `${completedChapters}/${totalChapters}`;
+      }
+      
+      processingJobs.push({
+        title: bookTitle,
+        status: effectiveStatus,
+        progress: progressStr,
+        stage: (statusData && statusData.details) ? statusData.details.stage : ''
+      });
+    }
+    
+    // Track failed jobs
+    if (effectiveStatus === 'failed') {
+      const errorMsg = (statusData && statusData.details && statusData.details.error) 
+        ? statusData.details.error 
+        : 'Unknown error';
+      failedJobs.push({
+        title: metadata.book_title || 'Unknown',
+        error: errorMsg
+      });
+    }
+    
+    // Sync logic for complete jobs only
+    if (metadata.status !== 'complete' && effectiveStatus !== 'completed') continue;
+    
     const fileId = metadata.file_id;
     if (!fileId) continue;
 
@@ -50,18 +108,56 @@ function syncCompletedJobs() {
     const completedDate = metadata.completed_at ? new Date(metadata.completed_at) : new Date();
 
     if (fileIdMap.has(fileId)) {
-      // Update existing row
       const rowIndex = fileIdMap.get(fileId);
       updateRowInSheet(sheet, rowIndex, metadata, completedDate);
+      updatedCount++;
     } else {
-      // Append new row
       appendJobToSheet(sheet, jobId, metadata);
       syncedCount++;
       console.log(`Newly synced: ${title}`);
     }
   }
   
-  console.log(`Sync complete. New entries added: ${syncedCount}`);
+  // Enhanced output
+  console.log('');
+  console.log('=== Job Status Report ===');
+  console.log(`Total jobs checked: ${recentMetadataObjects.length}`);
+  console.log('');
+  console.log('Status breakdown:');
+  console.log(`  ✓ Complete: ${statusCounts.complete + statusCounts.completed}`);
+  console.log(`  ⏳ Processing: ${statusCounts.processing}`);
+  console.log(`  📋 Queued: ${statusCounts.queued}`);
+  console.log(`  ✗ Failed: ${statusCounts.failed}`);
+  if (statusCounts.unknown > 0) {
+    console.log(`  ? Unknown: ${statusCounts.unknown}`);
+  }
+  
+  if (processingJobs.length > 0) {
+    console.log('');
+    console.log('Processing/Queued jobs:');
+    for (const job of processingJobs) {
+      const progressPart = job.progress ? ` (${job.progress})` : '';
+      const stagePart = job.stage ? ` - ${job.stage}` : '';
+      console.log(`  - ${job.title}${progressPart}${stagePart}`);
+    }
+  }
+  
+  if (failedJobs.length > 0) {
+    console.log('');
+    console.log('Failed jobs:');
+    for (const job of failedJobs) {
+      const truncatedError = job.error.length > 50 ? job.error.substring(0, 50) + '...' : job.error;
+      console.log(`  - ${job.title}: ${truncatedError}`);
+    }
+  }
+  
+  console.log('');
+  console.log('Sync results:');
+  console.log(`  New entries added: ${syncedCount}`);
+  console.log(`  Existing entries updated: ${updatedCount}`);
+  console.log('');
+  console.log('Sync complete.');
+  
   return syncedCount;
 }
 
@@ -135,6 +231,33 @@ function readJobMetadata(jobId) {
     return JSON.parse(response.getContentText());
   } catch (e) {
     console.error(`Failed to parse metadata for job ${jobId}:`, e);
+    return null;
+  }
+}
+
+/**
+ * Reads job status.json from GCS for detailed progress tracking.
+ * Returns null if status.json doesn't exist (older jobs may not have it).
+ */
+function readJobStatus(jobId) {
+  const CONFIG = getGcsConfig_();
+  const accessToken = ScriptApp.getOAuthToken();
+  const objectPath = `jobs/${jobId}/status.json`;
+  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o/${encodeURIComponent(objectPath)}?alt=media`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    return null;  // status.json doesn't exist for this job
+  }
+  
+  try {
+    return JSON.parse(response.getContentText());
+  } catch (e) {
+    console.error(`Failed to parse status.json for job ${jobId}:`, e);
     return null;
   }
 }
