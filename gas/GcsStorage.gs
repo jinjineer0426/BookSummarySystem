@@ -21,6 +21,7 @@ function getGcsConfig_() {
 /**
  * Syncs completed jobs from GCS to the spreadsheet.
  * Enhanced to provide detailed status reporting for all jobs.
+ * Deduplicates by file_id to show only the most recent job per book.
  */
 function syncCompletedJobs() {
   const sheet = getLogSheet();
@@ -30,6 +31,10 @@ function syncCompletedJobs() {
   const recentMetadataObjects = listRecentMetadataObjects(72);
   console.log(`Found ${recentMetadataObjects.length} recently updated metadata files in GCS`);
   
+  // Deduplicate by file_id, keeping only the most recent job per book
+  const uniqueJobs = deduplicateJobsByFileId(recentMetadataObjects);
+  console.log(`Unique files after deduplication: ${uniqueJobs.length}`);
+  
   // Status tracking
   const statusCounts = { complete: 0, completed: 0, processing: 0, failed: 0, queued: 0, unknown: 0 };
   const processingJobs = [];
@@ -38,14 +43,7 @@ function syncCompletedJobs() {
   let syncedCount = 0;
   let updatedCount = 0;
   
-  for (const obj of recentMetadataObjects) {
-    const pathParts = obj.name.split('/');
-    if (pathParts.length < 2) continue;
-    const jobId = pathParts[1];
-    
-    const metadata = readJobMetadata(jobId);
-    if (!metadata) continue;
-    
+  for (const { obj, metadata, jobId } of uniqueJobs) {
     // Read status.json for detailed progress (may not exist)
     const statusData = readJobStatus(jobId);
     
@@ -121,7 +119,7 @@ function syncCompletedJobs() {
   // Enhanced output
   console.log('');
   console.log('=== Job Status Report ===');
-  console.log(`Total jobs checked: ${recentMetadataObjects.length}`);
+  console.log(`Total unique files: ${uniqueJobs.length}`);
   console.log('');
   console.log('Status breakdown:');
   console.log(`  ✓ Complete: ${statusCounts.complete + statusCounts.completed}`);
@@ -159,6 +157,35 @@ function syncCompletedJobs() {
   console.log('Sync complete.');
   
   return syncedCount;
+}
+
+/**
+ * Deduplicates jobs by file_id, keeping only the most recent job for each file.
+ * Returns array of { obj, metadata, jobId } sorted by updated timestamp.
+ */
+function deduplicateJobsByFileId(metadataObjects) {
+  const jobsByFileId = new Map();
+  
+  for (const obj of metadataObjects) {
+    const pathParts = obj.name.split('/');
+    if (pathParts.length < 2) continue;
+    const jobId = pathParts[1];
+    
+    const metadata = readJobMetadata(jobId);
+    if (!metadata) continue;
+    
+    const fileId = metadata.file_id;
+    if (!fileId) continue;
+    
+    const updatedAt = new Date(obj.updated);
+    
+    // Keep only the most recent job per file_id
+    if (!jobsByFileId.has(fileId) || jobsByFileId.get(fileId).updatedAt < updatedAt) {
+      jobsByFileId.set(fileId, { obj, metadata, jobId, updatedAt });
+    }
+  }
+  
+  return Array.from(jobsByFileId.values());
 }
 
 /**
@@ -331,4 +358,223 @@ function setupSyncTrigger() {
 function testSync() {
   const count = syncCompletedJobs();
   console.log(`Test sync completed. Synced ${count} jobs.`);
+}
+
+// === Job Cleanup Functions ===
+
+/**
+ * Cleans up old job folders from GCS.
+ * - Completed jobs: deleted after 7 days
+ * - Failed jobs: deleted after 3 days
+ * 
+ * Run manually or set up as a weekly trigger.
+ */
+function cleanupOldJobs() {
+  const CONFIG = getGcsConfig_();
+  const accessToken = ScriptApp.getOAuthToken();
+  
+  console.log('Starting job cleanup...');
+  
+  // List all objects in jobs/ prefix
+  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o?prefix=jobs/`;
+  const response = UrlFetchApp.fetch(url, {
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    console.error('Failed to list jobs:', response.getContentText());
+    return;
+  }
+  
+  const data = JSON.parse(response.getContentText());
+  const items = data.items || [];
+  
+  // Group objects by jobId
+  const jobObjects = new Map();
+  for (const obj of items) {
+    const parts = obj.name.split('/');
+    if (parts.length >= 2 && parts[1]) {
+      const jobId = parts[1];
+      if (!jobObjects.has(jobId)) {
+        jobObjects.set(jobId, []);
+      }
+      jobObjects.get(jobId).push(obj.name);
+    }
+  }
+  
+  console.log(`Found ${jobObjects.size} job folders in GCS`);
+  
+  const now = new Date();
+  const COMPLETED_RETENTION_DAYS = 7;
+  const FAILED_RETENTION_DAYS = 3;
+  
+  let deletedCount = 0;
+  let skippedCount = 0;
+  
+  for (const [jobId, objectNames] of jobObjects) {
+    const metadata = readJobMetadata(jobId);
+    const statusData = readJobStatus(jobId);
+    
+    if (!metadata) {
+      skippedCount++;
+      continue;
+    }
+    
+    // Determine status
+    const effectiveStatus = (statusData && statusData.status) 
+      ? statusData.status 
+      : (metadata.status || 'unknown');
+    
+    // Determine last update time
+    let updatedAt = null;
+    if (statusData && statusData.updated_at) {
+      updatedAt = new Date(statusData.updated_at);
+    } else if (metadata.completed_at) {
+      updatedAt = new Date(metadata.completed_at);
+    } else if (metadata.created_at) {
+      updatedAt = new Date(metadata.created_at);
+    }
+    
+    if (!updatedAt) {
+      skippedCount++;
+      continue;
+    }
+    
+    const daysSinceUpdate = (now - updatedAt) / (1000 * 60 * 60 * 24);
+    
+    let shouldDelete = false;
+    let reason = '';
+    
+    if ((effectiveStatus === 'complete' || effectiveStatus === 'completed') 
+        && daysSinceUpdate > COMPLETED_RETENTION_DAYS) {
+      shouldDelete = true;
+      reason = `completed ${Math.floor(daysSinceUpdate)} days ago`;
+    } else if (effectiveStatus === 'failed' && daysSinceUpdate > FAILED_RETENTION_DAYS) {
+      shouldDelete = true;
+      reason = `failed ${Math.floor(daysSinceUpdate)} days ago`;
+    }
+    
+    if (shouldDelete) {
+      const title = metadata.book_title || jobId;
+      console.log(`Deleting: ${title} (${reason})`);
+      deleteJobFolder_(objectNames);
+      deletedCount++;
+    }
+  }
+  
+  console.log('');
+  console.log('=== Cleanup Summary ===');
+  console.log(`Deleted: ${deletedCount} old job folders`);
+  console.log(`Skipped: ${skippedCount} (no metadata or timestamp)`);
+  console.log('Cleanup complete.');
+}
+
+/**
+ * Deletes all objects in a job folder.
+ * @private
+ */
+function deleteJobFolder_(objectNames) {
+  const CONFIG = getGcsConfig_();
+  const accessToken = ScriptApp.getOAuthToken();
+  
+  for (const objectName of objectNames) {
+    const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o/${encodeURIComponent(objectName)}`;
+    try {
+      UrlFetchApp.fetch(url, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+        muteHttpExceptions: true
+      });
+    } catch (e) {
+      console.error(`Failed to delete ${objectName}: ${e}`);
+    }
+  }
+}
+
+/**
+ * Dry run - shows what would be deleted without actually deleting.
+ */
+function previewCleanup() {
+  const CONFIG = getGcsConfig_();
+  const accessToken = ScriptApp.getOAuthToken();
+  
+  console.log('=== Cleanup Preview (Dry Run) ===');
+  console.log('');
+  
+  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o?prefix=jobs/`;
+  const response = UrlFetchApp.fetch(url, {
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    console.error('Failed to list jobs');
+    return;
+  }
+  
+  const data = JSON.parse(response.getContentText());
+  const items = data.items || [];
+  
+  // Extract unique job IDs
+  const jobIds = new Set();
+  for (const obj of items) {
+    const parts = obj.name.split('/');
+    if (parts.length >= 2 && parts[1]) {
+      jobIds.add(parts[1]);
+    }
+  }
+  
+  const now = new Date();
+  const toDelete = [];
+  const toKeep = [];
+  
+  for (const jobId of jobIds) {
+    const metadata = readJobMetadata(jobId);
+    const statusData = readJobStatus(jobId);
+    
+    if (!metadata) continue;
+    
+    const effectiveStatus = (statusData && statusData.status) 
+      ? statusData.status 
+      : (metadata.status || 'unknown');
+    
+    let updatedAt = null;
+    if (statusData && statusData.updated_at) {
+      updatedAt = new Date(statusData.updated_at);
+    } else if (metadata.completed_at) {
+      updatedAt = new Date(metadata.completed_at);
+    }
+    
+    if (!updatedAt) continue;
+    
+    const daysSinceUpdate = (now - updatedAt) / (1000 * 60 * 60 * 24);
+    const title = metadata.book_title || jobId;
+    
+    if ((effectiveStatus === 'complete' || effectiveStatus === 'completed') && daysSinceUpdate > 7) {
+      toDelete.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
+    } else if (effectiveStatus === 'failed' && daysSinceUpdate > 3) {
+      toDelete.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
+    } else {
+      toKeep.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
+    }
+  }
+  
+  console.log('Would DELETE:');
+  if (toDelete.length === 0) {
+    console.log('  (none)');
+  } else {
+    for (const item of toDelete) {
+      console.log(`  - ${item}`);
+    }
+  }
+  
+  console.log('');
+  console.log('Would KEEP:');
+  for (const item of toKeep) {
+    console.log(`  - ${item}`);
+  }
+  
+  console.log('');
+  console.log(`Summary: ${toDelete.length} to delete, ${toKeep.length} to keep`);
 }
