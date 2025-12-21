@@ -129,8 +129,74 @@ class PdfProcessor:
             if content:
                 chapters.append({"title": title, "content": content})
                 logger.debug(f"  Chapter '{title[:40]}...' has {len(content)} chars")
+        
+        # Runaway detection and deduplication
+        if len(chapters) > 30:
+            logger.warning(f"Potentially too many chapters detected: {len(chapters)}")
+            unique_ch_nums = set(self._normalize_chapter_number(ch['title']) for ch in chapters)
+            unique_ch_nums.discard(None)
+            
+            duplication_rate = 1 - (len(unique_ch_nums) / len(chapters)) if chapters else 0
+            logger.debug(f"Unique chapter numbers: {len(unique_ch_nums)}, Duplication rate: {duplication_rate:.2%}")
+            
+            if duplication_rate > 0.5:
+                logger.warning(f"High duplication detected ({duplication_rate:.2%}). Applying deduplication...")
+                chapters = self._deduplicate_chapters(chapters)
+                logger.info(f"After deduplication: {len(chapters)} chapters")
                 
         return chapters
+    
+    def _normalize_chapter_number(self, title: str) -> Optional[str]:
+        """
+        章番号部分のみを正規化して抽出。
+        OCRノイズ（〃、″など）を除去し、全角→半角変換。
+        """
+        import unicodedata
+        
+        # 全角→半角、OCRノイズ除去
+        title = unicodedata.normalize('NFKC', title)
+        title = re.sub(r'[〃″′"｜]', '', title)
+        
+        # 第X章、第X部などを抽出
+        m = re.search(r'第\s*(\d+)\s*[章部編節]', title)
+        if m:
+            return f"第{m.group(1)}章"
+        
+        # Chapter X, Part X などを抽出
+        m = re.search(r'(?:Chapter|Part|PART|パート)\s*(\d+)', title, re.IGNORECASE)
+        if m:
+            return f"Chapter{m.group(1)}"
+            
+        return None
+    
+    def _deduplicate_chapters(self, chapters: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        同一章の重複を除去し、最も長いコンテンツを採用。
+        章番号（第X章）のみで判定し、OCRノイズを無視。
+        """
+        logger = get_logger()
+        seen = {}  # chapter_number -> (index, content_length, chapter_dict)
+        result = []
+        
+        for ch in chapters:
+            ch_num = self._normalize_chapter_number(ch['title'])
+            if ch_num:
+                if ch_num in seen:
+                    # 既存より長いコンテンツなら置換
+                    old_idx, old_len, old_ch = seen[ch_num]
+                    if len(ch['content']) > old_len:
+                        result[old_idx] = ch
+                        seen[ch_num] = (old_idx, len(ch['content']), ch)
+                        logger.debug(f"  Replaced duplicate {ch_num}: {old_len} -> {len(ch['content'])} chars")
+                else:
+                    seen[ch_num] = (len(result), len(ch['content']), ch)
+                    result.append(ch)
+            else:
+                # 章番号が抽出できないものはそのまま追加
+                result.append(ch)
+                
+        return result
+
 
     def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: Optional[int] = None) -> Optional[Dict]:
         """
@@ -175,41 +241,60 @@ class PdfProcessor:
             
             doc.close()
             
-            prompt = f"""あなたは書籍の構造を分析する専門家です。
+            prompt = f"""あなたは日本語書籍の目次（Table of Contents）を解析する専門家です。
+
+【タスク】
+添付画像から**目次ページを特定**し、そこに記載された章立て構造を抽出してください。
 
 【PDF情報】
 - 総ページ数: {total_pages}
 - ファイル名: {filename}
+- スキャン範囲: 1〜{scan_end}ページ目
 
-添付画像から書籍の目次構造を詳細に抽出してください。
-特に、ビジネス書や専門書において、章の下にある個別のトピックやサブセクション、辞書的項目の抽出が重要です。
+【重要な区別】
+⚠️ 以下は目次ではありません。無視してください：
+- 各ページの**ヘッダー/フッター**に繰り返し表示される章タイトル
+- 本文中に現れる「第X章で述べたように…」のような**参照テキスト**
+- 奥付、著者紹介、索引のページ
 
-【抽出対象】
-1. 主要な目次（部・章）だけでなく、その下位にある詳細な項目（節、項、個別のトピック）も含めて抽出してください。
-2. 例えば「武器になる哲学」のような辞書型書籍の場合、50個のキーコンセプトなどが並んでいれば、それらを全て個別の「章」として扱ってください。
-3. 「第1部」「第2部」のような大きな区分も抽出してください。
+✅ 目次ページの特徴：
+- 複数の章/節がリスト形式で並んでいる
+- 各項目に対応するページ番号が記載されている
+- 通常、書籍の冒頭（3〜15ページ目あたり）に配置
 
 【抽出ルール】
-- ページ番号が {total_pages} を超える項目は除外してください。
-- 階層構造は意識せず、全ての抽出項目をフラットなリストとして出力してください（後続処理でページ順にソート・分割されます）。
-- 出力は以下のJSON形式のみです。JSON以外のマークダウンや説明は不要です。
+1. **目次ページが見つかった場合**:
+   - 「部」「章」「節」などの階層構造をフラットなリストとして抽出
+   - ページ番号が {total_pages} を超える項目は除外
+   - 同じ章番号が複数回現れる場合は、最初の1つのみ採用
+
+2. **目次ページが見つからない場合**:
+   - `has_toc_page: false` を設定
+   - `chapters_in_this_volume: []` を返す（空配列）
+
+3. **出力形式**（JSON以外の説明は不要）:
 
 {{
   "volume_info": "上巻/下巻/全1巻",
   "has_toc_page": true,
+  "toc_page_numbers": [4, 5],
   "chapters_in_this_volume": [
     {{
-      "number": "01",
-      "title": "カルヴァン「予定説」",
-      "content_start_page": 25
+      "number": "第1章",
+      "title": "脳科学と時間管理",
+      "content_start_page": 15
     }},
     {{
-      "number": "第1章",
-      "title": "「人」に関するキーコンセプト",
-      "content_start_page": 20
+      "number": "第2章",
+      "title": "朝のルーティン",
+      "content_start_page": 45
     }}
   ]
 }}
+
+【補足】
+- 辞書型書籍（例：「武器になる哲学」）の場合、50個以上のキーコンセプトが並ぶことがあります。これらも個別の「章」として抽出してください。
+- 章番号のフォーマット揺れ（第1章/第一章/Chapter 1）は気にせず、見つかったまま記録してください。
 """
             
             content = [prompt] + images
