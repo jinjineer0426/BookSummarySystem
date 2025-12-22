@@ -124,7 +124,10 @@ def finalize_book(request):
             final_data["title"]
         )
         
-        # 9. Mark job as complete
+        # 9. Flush all pending concepts/categories to GCS (batch write)
+        gcs.flush_all_pending()
+        
+        # 10. Mark job as complete
         tracker.mark_completed(gcs_uri)
         logger.log_stage("finalization", "completed")
         
@@ -189,8 +192,11 @@ def _generate_book_summary(
     prompt = f"""
     Based on these chapter summaries, create an overall book summary in Japanese.
     
-    Book Title: {book_title}
-    Category: {category}
+    Book Title (Input): {book_title}
+    Category (Input): {category}
+    
+    Note: The input "Book Title" might be in the format "Author_Title". 
+    Please extract identifying information carefully.
     
     Chapter Summaries:
     {chapter_summaries_text}
@@ -199,7 +205,7 @@ def _generate_book_summary(
     
     Output JSON:
     {{
-      "title": "Book title (clean, without .pdf)",
+      "title": "Pure book title ONLY (Japanese, without author name, without .pdf)",
       "author": "Author name",
       "suggestedSubfolder": "Subcategory",
       "allKeyConcepts": ["Top 10 most important concepts"],
@@ -217,6 +223,13 @@ def _generate_book_summary(
             "allKeyConcepts": list(all_concepts)[:10],
             "summary": "Book summary generation failed."
         }
+    
+    # Post-processing: If Gemini returned the same string as the input Author_Title, 
+    # and we have a valid author, try to strip the author prefix strictly to be safe.
+    if result.get("title") == book_title and result.get("author") and "_" in book_title:
+        author_prefix = result["author"] + "_"
+        if book_title.startswith(author_prefix):
+            result["title"] = book_title[len(author_prefix):]
     
     return result
 

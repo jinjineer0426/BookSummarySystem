@@ -28,7 +28,7 @@
         "toc_image_dpi": 100,
         "similarity_threshold": 0.82,
         "batch_size": 2,
-        "batch_delay_seconds": 30
+        "batch_delay_seconds": 60
     },
     "cloud_tasks": {
         "region": "asia-northeast1",

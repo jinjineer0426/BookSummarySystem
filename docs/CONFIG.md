@@ -30,8 +30,8 @@ Edit `config/system_config.json`:
 {
   "version": "1.0",
   "gemini": {
-    "model_id": "gemini-2.0-flash",
-    "toc_extraction_model": "gemini-2.0-flash-exp"
+    "model_id": "gemini-2.5-flash",
+    "toc_extraction_model": "gemini-2.5-flash"
   },
   "folders": {
     "source_folders": {
@@ -72,8 +72,8 @@ ALERTS_ENABLED = "true"
 
 | Key | Description | Default |
 |:---|:---|:---|
-| `gemini.model_id` | Base Gemini model | `gemini-2.0-flash` |
-| `gemini.toc_extraction_model` | Model for TOC extraction | `gemini-2.0-flash-exp` |
+| `gemini.model_id` | Base Gemini model | `gemini-2.5-flash` |
+| `gemini.toc_extraction_model` | Model for TOC extraction | `gemini-2.5-flash` |
 | `gemini.temperature` | Generation temperature | `0.2` |
 
 ### Processing Settings

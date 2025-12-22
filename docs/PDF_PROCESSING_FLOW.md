@@ -89,3 +89,16 @@ Geminiは以下の情報を抽出します：
 | `PDF_FALLBACK_FOLDER_ID` | AI分析失敗時のデフォルト保存先 |
 | `PDF_DESTINATION_FOLDERS` | カテゴリ別フォルダマッピング (JSON) |
 | `GEMINI_API_KEY` | Gemini APIキー |
+
+## 出力ファイル名の命名規則
+
+> [!NOTE]
+> PDFファイルとMarkdownサマリーで命名規則が異なります。
+
+| ファイルタイプ | 保存先 | 命名規則 | 例 |
+|:---|:---|:---|:---|
+| **PDF** | Google Drive | `著者_タイトル.pdf` | `山口周_武器になる哲学.pdf` |
+| **Markdown** | GCS (Obsidian) | `タイトル.md` | `武器になる哲学.md` |
+
+Markdownサマリー内には著者名がメタデータとして含まれます。
+

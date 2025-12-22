@@ -49,10 +49,10 @@ graph TD
 
 | 設定 | 値 | 説明 |
 |:---|:---|:---|
-| `TOC_EXTRACTION_MODEL` | `gemini-2.0-flash` | 使用するGeminiモデル |
-| `TOC_IMAGE_DPI` | `150` | 画像変換時のDPI |
-| `TOC_SCAN_START_PAGE` | `0` | スキャン開始ページ (0-indexed) |
-| `TOC_SCAN_END_PAGE` | `10` | スキャン終了ページ |
+| `TOC_EXTRACTION_MODEL` | `gemini-2.5-flash` | 使用するGeminiモデル |
+| `TOC_IMAGE_DPI` | `100` | 画像変換時のDPI |
+| `TOC_SCAN_START_PAGE` | `3` | スキャン開始ページ (0-indexed) |
+| `TOC_SCAN_END_PAGE` | `30` | スキャン終了ページ |
 
 ### プロンプト概要
 
