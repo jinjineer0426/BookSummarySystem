@@ -218,7 +218,7 @@ timestamp>="2025-12-20T00:00:00Z"
 
 2. Check Cloud Tasks queue:
    ```
-   gcloud tasks queues describe book-summary-queue --location=us-central1
+   gcloud tasks queues describe book-summary-queue --location=asia-northeast1
    ```
 
 3. Manually trigger finalizer:
