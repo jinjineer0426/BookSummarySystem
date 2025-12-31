@@ -8,7 +8,10 @@ structured metadata for easy filtering and analysis.
 import sys
 from datetime import datetime
 from typing import Optional, Any, Dict
-from google.cloud import logging as cloud_logging
+try:
+    from google.cloud import logging as cloud_logging
+except ImportError:
+    cloud_logging = None
 
 
 class StructuredLogger:

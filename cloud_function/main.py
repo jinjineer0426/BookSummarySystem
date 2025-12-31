@@ -24,6 +24,7 @@ import functions_framework
 import google.auth
 import sys
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from config import (
     PROJECT_ID, BUCKET_NAME, OBSIDIAN_BUCKET_NAME,
@@ -75,6 +76,18 @@ def main_http_entry(request):
         return analyze_concepts(request)
     else:
         return json.dumps({"error": f"Path {path} not found"}), 404
+
+def _is_valid_drive_file_id(file_id: str) -> bool:
+    """
+    Validates Google Drive File ID format.
+    Typically ~33-44 characters, alphanumeric with underscores and hyphens.
+    """
+    if not file_id or len(file_id) < 20:
+        return False
+    if file_id.startswith("test_"):
+        return False
+    # Google Drive IDs usually match this pattern
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', file_id))
 
 def _create_cloud_task(
     gcs: GcsService,
@@ -135,6 +148,10 @@ def process_book(request):
         
         file_id = request_json['file_id']
         category = request_json.get('category', 'Business')
+        
+        if not _is_valid_drive_file_id(file_id):
+            logger.error("Invalid file_id format", file_id=file_id)
+            return json.dumps({'error': f'Invalid file_id format: {file_id}'}), 400
         job_id = str(uuid.uuid4())
         
         set_global_job_id(job_id)
@@ -201,7 +218,17 @@ def prepare_book(request):
         creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
         drive_service = build('drive', 'v3', credentials=creds)
         
-        file_metadata = drive_service.files().get(fileId=file_id).execute()
+        try:
+            file_metadata = drive_service.files().get(fileId=file_id).execute()
+        except HttpError as e:
+            if e.resp.status == 404:
+                error_msg = f"File not found in Google Drive: {file_id}"
+                logger.error(error_msg)
+                tracker.mark_failed(error_msg, "file_not_found")
+                # Return 200 to stop Cloud Tasks from retrying a permanent failure
+                return json.dumps({'error': error_msg}), 200
+            raise
+            
         file_name = file_metadata.get('name', 'Untitled')
         if file_name.lower().endswith('.pdf'):
             file_name = file_name[:-4]

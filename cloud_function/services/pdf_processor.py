@@ -4,7 +4,8 @@ import json
 import pypdf
 import fitz  # PyMuPDF
 import base64
-from typing import List, Dict, Any, Optional
+import sys
+from typing import List, Dict, Any, Optional, Tuple
 from googleapiclient.http import MediaIoBaseDownload
 from config import TOC_EXTRACTION_MODEL, TOC_IMAGE_DPI, TOC_SCAN_START_PAGE, TOC_SCAN_END_PAGE
 from services.logging_service import get_logger
@@ -106,7 +107,9 @@ class PdfProcessor:
                     end = fallback_positions[i+1][0] if i + 1 < len(fallback_positions) else len(text)
                     content = text[start:end].strip()
                     # Get a better title by looking ahead a bit
-                    title_extended = text[pos:min(pos+100, len(text))].split('\n')[0].strip()
+                    title_extended = self._clean_chapter_title(
+                        text[pos:min(pos+100, len(text))].split('\n')[0].strip()
+                    )
                     if content:
                         chapters.append({"title": title_extended, "content": content})
                         logger.debug(f"  [Fallback] Chapter '{title_extended[:40]}...' has {len(content)} chars")
@@ -124,7 +127,7 @@ class PdfProcessor:
         for i in range(len(matches)):
             start = matches[i].end()
             end = matches[i+1].start() if i + 1 < len(matches) else len(text)
-            title = matches[i].group(0).strip()
+            title = self._clean_chapter_title(matches[i].group(0).strip())
             content = text[start:end].strip()
             if content:
                 chapters.append({"title": title, "content": content})
@@ -196,9 +199,44 @@ class PdfProcessor:
                 result.append(ch)
                 
         return result
+    
+    def _clean_chapter_title(self, title: str) -> str:
+        """章タイトルからOCRノイズを除去"""
+        import unicodedata
+        import re
+        
+        # 全角→半角正規化
+        title = unicodedata.normalize('NFKC', title)
+        
+        # ゴミパターン除去
+        patterns = [
+            (r'Contents$', ''),           # 末尾の "Contents"
+            (r'目次$', ''),               # 末尾の "目次"
+            (r'\d{3,}第', ' 第'),         # ページ番号+「第」
+            (r'[\'\"''""`|]', ''),        # 引用符・パイプ
+            (r'^\s*[：:]+\s*', ''),       # 先頭コロン
+            (r'\s{2,}', ' '),             # 連続空白
+            (r'[■□◆◇●○]+', ''),         # OCR記号ノイズ
+        ]
+        
+        for pattern, replacement in patterns:
+            title = re.sub(pattern, replacement, title)
+        
+        # 長すぎるタイトルを切り詰め（80文字まで）
+        if len(title) > 80:
+            # 最初の句読点で切る
+            for sep in ['。', '、', ' ', '　']:
+                idx = title.find(sep)
+                if 10 < idx < 80:
+                    title = title[:idx]
+                    break
+            else:
+                title = title[:80]
+        
+        return title.strip()
 
 
-    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: Optional[int] = None) -> Optional[Dict]:
+    def extract_toc_with_ai(self, pdf_path: str, gemini_service: Any, gcs_service: Any = None, job_id: str = None, override_end_page: Optional[int] = None, is_retry: bool = False) -> Optional[Dict]:
         """
         Extracts TOC structure using Gemini Vision API.
         Converts first few pages to images and asks Gemini to parse content.
@@ -244,27 +282,45 @@ class PdfProcessor:
             prompt = f"""あなたは日本語書籍の目次（Table of Contents）を解析する専門家です。
 
 【タスク】
-添付画像から**目次ページを特定**し、そこに記載された章立て構造を抽出してください。
+添付画像から目次ページを特定し、**筆者が意図した最小の構成単位（各章や節などの詳細項目）**を抽出してください。
 
 【PDF情報】
 - 総ページ数: {total_pages}
 - ファイル名: {filename}
 - スキャン範囲: 1〜{scan_end}ページ目
 
+【最小構成単位の判断基準】
+- 「第一部」「第二部」のような**大区分（部）**がある場合：
+  → **「部」に属するすべての章を漏れなく抽出してください**。
+  → 例：「第1部」に第1〜4章が含まれる場合、第1章・第2章・第3章・第4章をすべて個別に抽出します。
+  → 部だけでは要約が広範になりすぎるため、その下の階層（章・節）を重視してください。
+  
+- 「第1章」「第2章」のような**章**がある場合：
+  → これを最小の構成単位として抽出してください。
+  
+- 辞書型書籍（「01 概念名」のような短い項目が並ぶ）：
+  → 各項目を個別の単位として抽出してください。
+
 【重要な区別】
 ⚠️ 以下は目次ではありません。無視してください：
 - 各ページの**ヘッダー/フッター**に繰り返し表示される章タイトル
 - 本文中に現れる「第X章で述べたように…」のような**参照テキスト**
 - 奥付、著者紹介、索引のページ
+- **「Contents」「目次」というラベル自体**（これらは章タイトルではありません）
 
 ✅ 目次ページの特徴：
 - 複数の章/節がリスト形式で並んでいる
 - 各項目に対応するページ番号が記載されている
 - 通常、書籍の冒頭（3〜15ページ目あたり）に配置
 
+【重要：完全性の確認】
+- 章番号が連続しているか確認してください（第1章→第2章→第3章...）
+- 途中の章が抜けていないか確認してください
+- **目次が複数ページにまたがる場合、すべてのページを確認してください**
+
 【抽出ルール】
 1. **目次ページが見つかった場合**:
-   - 「部」「章」「節」などの階層構造をフラットなリストとして抽出
+   - 抽出した「部」は含めず、その下の「章」や「節」などの階層をフラットなリストとして抽出
    - ページ番号が {total_pages} を超える項目は除外
    - 同じ章番号が複数回現れる場合は、最初の1つのみ採用
 
@@ -291,10 +347,6 @@ class PdfProcessor:
     }}
   ]
 }}
-
-【補足】
-- 辞書型書籍（例：「武器になる哲学」）の場合、50個以上のキーコンセプトが並ぶことがあります。これらも個別の「章」として抽出してください。
-- 章番号のフォーマット揺れ（第1章/第一章/Chapter 1）は気にせず、見つかったまま記録してください。
 """
             
             content = [prompt] + images
@@ -334,6 +386,25 @@ class PdfProcessor:
                         chapter_end = next_start - 1
                 ch["content_end_page"] = chapter_end
             
+            # Quality validation
+            is_valid, reason = self._validate_toc_quality(chapters)
+            if not is_valid:
+                logger.warning(f"TOC quality validation failed: {reason}")
+                # Don't return None, just log it so calling side can decide retry
+            
+            # Chapter continuity check
+            is_continuous, gaps = self._check_chapter_continuity(chapters)
+            if not is_continuous:
+                logger.warning(f"Chapter continuity gaps detected: {gaps}")
+                if not is_retry:
+                    logger.info("Retrying with expanded scan range (50 pages)...")
+                    return self.extract_toc_with_ai(
+                        pdf_path, gemini_service, gcs_service, job_id,
+                        override_end_page=50, is_retry=True
+                    )
+                else:
+                    logger.warning("Gaps still present after retry. Proceeding with current result.")
+                
             result["chapters_in_this_volume"] = chapters
             
             # ALWAYS Save debug info for analysis
@@ -341,6 +412,11 @@ class PdfProcessor:
             self._save_toc_error(gcs_service, job_id, {
                 "stage": "extraction_result",
                 "extracted_chapters_count": len(chapters),
+                "is_valid": is_valid,
+                "validation_reason": reason,
+                "is_continuous": is_continuous,
+                "gaps": gaps,
+                "is_retry": is_retry,
                 "raw_result": result
             })
             
@@ -378,6 +454,77 @@ class PdfProcessor:
             get_logger().debug(f"Saved TOC error details to jobs/{job_id}/errors.json")
         except Exception as e:
             get_logger().warning(f"Failed to save error details: {e}")
+
+    def _validate_toc_quality(self, chapters: List[Dict]) -> Tuple[bool, str]:
+        """
+        TOC抽出結果の品質を検証。
+        Returns: (is_valid, reason)
+        """
+        import re
+        if len(chapters) < 2:
+            return False, f"章数不足: {len(chapters)}"
+        
+        # 長すぎるタイトルをチェック（OCRエラーの指標）
+        # 部・章などのプレフィックスも含めた合計長で判定
+        long_titles = sum(1 for ch in chapters 
+                          if len(str(ch.get("title", "")) + str(ch.get("number", ""))) > 80)
+        if long_titles / len(chapters) > 0.2:
+            return False, f"長すぎるタイトルが多い: {long_titles}/{len(chapters)}"
+        
+        # ページ番号の妥当性チェック
+        pages = [ch.get("content_start_page") for ch in chapters 
+                 if isinstance(ch.get("content_start_page"), int)]
+        if not pages:
+            return False, "ページ番号が抽出されていない"
+        
+        if pages != sorted(pages):
+            return False, "ページ順序が連続していない"
+        
+        # ゴミ文字チェック（Contents, 目次, 3桁以上の数字+第, OCRノイズ）
+        garbage_patterns = [r'Contents', r'目次', r'\d{3,}第', r'[■□◆◇●○]{3,}']
+        garbage_count = 0
+        for ch in chapters:
+            title = str(ch.get("title", ""))
+            if any(re.search(p, title) for p in garbage_patterns):
+                garbage_count += 1
+        
+        if garbage_count / len(chapters) > 0.2:
+            return False, f"ゴミ文字の混入率が高い: {garbage_count}/{len(chapters)}"
+        
+        return True, "OK"
+
+    def _check_chapter_continuity(self, chapters: List[Dict]) -> Tuple[bool, List[Tuple[int, int]]]:
+        """
+        章番号の連続性をチェック。
+        Returns: (is_continuous, gaps)
+          - gaps: [(start, end), ...] 例: [(1, 5)] = 第1章と第5章の間にギャップ
+        """
+        import re
+        logger = get_logger()
+        
+        chapter_nums = []
+        for ch in chapters:
+            number = ch.get("number", "")
+            m = re.search(r'第(\d+)章', number)
+            if m:
+                chapter_nums.append(int(m.group(1)))
+        
+        if not chapter_nums:
+            logger.debug("No chapter numbers found, skipping continuity check")
+            return True, []  # 章番号がない場合はスキップ
+        
+        sorted_nums = sorted(set(chapter_nums))
+        gaps = []
+        for i in range(len(sorted_nums) - 1):
+            if sorted_nums[i+1] - sorted_nums[i] > 1:
+                gaps.append((sorted_nums[i], sorted_nums[i+1]))
+        
+        if gaps:
+            logger.warning(f"Chapter gaps detected: {gaps} (extracted: {sorted_nums})")
+        else:
+            logger.debug(f"Chapter continuity OK: {sorted_nums}")
+        
+        return len(gaps) == 0, gaps
 
     def extract_chapters_from_toc(self, pdf_path: str, toc_data: Dict) -> List[Dict[str, str]]:
         """Extracts text for chapters based on TOC page ranges."""

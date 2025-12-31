@@ -44,8 +44,38 @@ function loadPdfLib() {
   globalThis.setInterval = function(func, delay) { return func(); };
   globalThis.clearInterval = function(id) {};
   
-  const url = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-  eval(UrlFetchApp.fetch(url).getContentText());
+  const cache = CacheService.getScriptCache();
+  const CACHE_KEY_PREFIX = 'PDF_LIB_JS_';
+  const CHUNK_SIZE = 90000; // CacheService limit is ~100KB per key
+  
+  // Try to load from cache first
+  let jsCode = '';
+  let chunkIndex = 0;
+  let chunk = cache.get(CACHE_KEY_PREFIX + chunkIndex);
+  
+  while (chunk !== null) {
+    jsCode += chunk;
+    chunkIndex++;
+    chunk = cache.get(CACHE_KEY_PREFIX + chunkIndex);
+  }
+  
+  if (!jsCode) {
+    // Cache miss: fetch from CDN and cache in chunks
+    console.log('pdf-lib cache miss, fetching from CDN...');
+    const url = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
+    jsCode = UrlFetchApp.fetch(url).getContentText();
+    
+    // Store in chunks
+    for (let i = 0; i * CHUNK_SIZE < jsCode.length; i++) {
+      const chunkData = jsCode.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      cache.put(CACHE_KEY_PREFIX + i, chunkData, 21600); // 6 hour TTL
+    }
+    console.log(`pdf-lib cached in ${Math.ceil(jsCode.length / CHUNK_SIZE)} chunks`);
+  } else {
+    console.log('pdf-lib loaded from cache');
+  }
+  
+  eval(jsCode);
   PDFLib = globalThis.PDFLib;
 }
 
@@ -87,7 +117,7 @@ async function main() {
           id: f.getId(),
           name: name,
           size: f.getSize(),
-          blob: null 
+          fileRef: f  // Keep file reference to avoid redundant DriveApp.getFileById calls
         });
       }
     }
@@ -127,8 +157,12 @@ async function main() {
         const coverBytes = downloadBytes(pair.cover.id, pair.cover.size);
         const mainBytes = downloadBytes(pair.main.id, pair.main.size);
         
+        // Reuse cached file references if available
+        const coverFile = pair.cover.fileRef || DriveApp.getFileById(pair.cover.id);
+        const mainFile = pair.main.fileRef || DriveApp.getFileById(pair.main.id);
+        
         if (apiKey) {
-           const analysis = analyzePdfWithGemini(coverBytes, apiKey);
+           const analysis = analyzePdfWithGemini(coverBytes, apiKey, CONFIG.MODEL_ID);
            if (analysis) {
              console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
              combinedName = constructFileName(analysis).replace(/\.pdf$/i, '');
@@ -149,8 +183,8 @@ async function main() {
         successCount++;
         console.log('  -> OK');
         
-        DriveApp.getFileById(pair.cover.id).setTrashed(true);
-        DriveApp.getFileById(pair.main.id).setTrashed(true);
+        coverFile.setTrashed(true);
+        mainFile.setTrashed(true);
       } catch (e) {
         console.error('  -> NG: ' + e.message);
         sendErrorAlert('PDF_TOOL_PAIR_PROCESSING', e.message, { 
@@ -173,7 +207,7 @@ async function main() {
         const fileBytes = downloadBytes(file.id, file.size);
         
         if (apiKey) {
-           const analysis = analyzePdfWithGemini(fileBytes, apiKey);
+           const analysis = analyzePdfWithGemini(fileBytes, apiKey, CONFIG.MODEL_ID);
            if (analysis) {
              console.log(`  -> AI分析成功: ${JSON.stringify(analysis)}`);
              fileName = constructFileName(analysis).replace(/\.pdf$/i, '');
@@ -187,7 +221,8 @@ async function main() {
         }
         
         // 単体ファイルの場合は回転・結合なしで移動・リネームのみ
-        const newFile = DriveApp.getFileById(file.id);
+        // Reuse cached file reference if available
+        const newFile = file.fileRef || DriveApp.getFileById(file.id);
         newFile.setName(fileName + '.pdf');
         
         // フォルダ移動
@@ -443,8 +478,12 @@ function identifyPdfType(filename) {
  */
 /**
  * GeminiでPDFを分析する (File APIを使用)
+ * @param {Uint8Array} pdfBytes - PDFのバイト配列
+ * @param {string} apiKey - Gemini API Key
+ * @param {string} modelId - Gemini Model ID (default: gemini-2.0-flash)
  */
-function analyzePdfWithGemini(pdfBytes, apiKey) {
+function analyzePdfWithGemini(pdfBytes, apiKey, modelId) {
+  modelId = modelId || 'gemini-2.0-flash';  // Default fallback
   try {
     // 1. PDF Blobを作成
     const coverBlob = Utilities.newBlob(pdfBytes, 'application/pdf', 'cover.pdf');
@@ -453,17 +492,20 @@ function analyzePdfWithGemini(pdfBytes, apiKey) {
     const fileUri = uploadBlobToGemini_(coverBlob, apiKey);
     console.log(`  -> PDFアップロード完了: ${fileUri}`);
     
-    // 3. 処理待ち (State: ACTIVEになるまで待機)
+    // 3. 処理待ち (State: ACTIVEになるまで待機) - Optimized exponential backoff
     let state = "PROCESSING";
     let attempts = 0;
-    while (state === "PROCESSING" && attempts < 10) {
-      Utilities.sleep(2000);
+    let waitMs = 500;  // Start with 500ms
+    while (state === "PROCESSING" && attempts < 8) {
+      Utilities.sleep(waitMs);
+      waitMs = Math.min(waitMs * 2, 4000);  // 0.5, 1, 2, 4, 4, 4, 4, 4秒 = 最大23.5秒
       const checkUrl = `https://generativelanguage.googleapis.com/v1beta/files/${fileUri.split('/').pop()}?key=${apiKey}`;
       try {
         const resp = UrlFetchApp.fetch(checkUrl);
         const data = JSON.parse(resp.getContentText());
         state = data.state;
         if (state === "FAILED") throw new Error("Gemini File Processing Failed");
+        if (state === "ACTIVE") break;  // Early exit
       } catch(e) {
         console.warn("  -> Status check warning: " + e.message);
       }
@@ -471,8 +513,6 @@ function analyzePdfWithGemini(pdfBytes, apiKey) {
     }
     
     // 4. 生成リクエスト
-    // Note: MODEL_ID should be passed as parameter or loaded from config
-    const modelId = 'gemini-2.0-flash';  // Default, can be overridden by caller
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
     
     const prompt = `
