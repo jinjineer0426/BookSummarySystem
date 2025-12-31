@@ -17,8 +17,11 @@ graph TD
     
     VisionTOC --> VisionCheck{2章以上<br/>検出できたか?}
     
-    VisionCheck -- Yes --> UseVision[Vision結果を採用]
+    VisionCheck -- Yes --> ContinuityCheck{章番号の<br/>連続性はOK?}
     VisionCheck -- No --> Retry{リトライ<br/>対象か?}
+    
+    ContinuityCheck -- Yes --> UseVision[Vision結果を採用]
+    ContinuityCheck -- No --> Retry
     
     Retry -- Yes --> ExpandRange[スキャン範囲を拡大<br/>50ページまで]
     ExpandRange --> VisionTOC2[Vision AI 再試行]
@@ -57,6 +60,7 @@ graph TD
 ### プロンプト概要
 
 Geminiに送信するプロンプトでは以下を指示：
+
 - 目次ページを探す
 - 「第○部」「第○章」「Chapter X」などの見出しを検出
 - 各章のタイトルと開始ページ番号を抽出
@@ -107,10 +111,16 @@ if len(chapters) > 100:
 
 ## リトライロジック
 
-Vision AIで2章未満しか検出できなかった場合：
-1. スキャン範囲を50ページまで拡大
+以下のいずれかの場合、自動的にリトライを行います：
+
+1. **章数不足**: 検出された章が2章未満の場合
+2. **連続性欠如**: 章番号にギャップがある場合（例：第1章の次に第5章が来る）
+
+リトライ時の動作：
+
+1. スキャン範囲を拡大（デフォルト50ページまで）
 2. 再度Vision AIを実行
-3. それでも失敗したら正規表現フォールバック
+3. それでも失敗またはギャップが解消されない場合は、その時点の最良の結果（または正規表現フォールバック）を採用
 
 ## エラーログ
 

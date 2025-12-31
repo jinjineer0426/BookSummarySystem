@@ -78,7 +78,7 @@ TOC_IMAGE_DPI = int(get_config_value(
 TOC_SCAN_START_PAGE = int(get_config_value(
     "processing.toc_scan_start_page",
     "TOC_SCAN_START_PAGE",
-    "3"
+    "0"
 ))
 
 TOC_SCAN_END_PAGE = int(get_config_value(
