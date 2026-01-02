@@ -148,11 +148,12 @@ function markAsProcessed(fileId, fileName, category, result) {
     fileName,
     category,
     new Date(), // Timestamp
-    result.title || '',
+    result.title || fileName.replace(/\.pdf$/i, ''),
     result.author || '',
-    (result.concepts || []).join(', '),
-    (result.new_concepts || []).join(', '),
-    result.gcs_uri || ''
+    'Processing',  // Status (New Column G)
+    '',            // Concepts (Now Column H, cleared initially)
+    '',            // New Concepts (Now Column I, cleared initially)
+    result.gcs_uri || `Queued: ${result.chapters || 0} chapters` // Now Column J
   ]);
 }
 
@@ -163,10 +164,10 @@ function getLogSheet() {
   
   if (!sheet) {
     sheet = ss.insertSheet(CONFIG.LOG_SHEET_NAME);
-    // Initialize Headers
+    // Initialize Headers (10 Columns)
     sheet.appendRow([
       'File ID', 'File Name', 'Category', 'Processed Date', 
-      'Generated Title', 'Author', 'Concepts', 'New Concepts', 'GCS URI'
+      'Generated Title', 'Author', 'Status', 'Concepts', 'New Concepts', 'GCS URI'
     ]);
   }
   return sheet;
