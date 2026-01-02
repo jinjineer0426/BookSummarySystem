@@ -4,11 +4,18 @@ Job Tracking Service - Monitors job status in GCS.
 This service tracks job state through the entire processing pipeline,
 making it easy to monitor progress and identify stuck or failed jobs.
 """
+from enum import Enum
 import json
 from datetime import datetime
 from typing import Optional, Dict, Any
 from google.cloud import storage
 
+class JobStatus(str, Enum):
+    """Job status values as strings for consistency and serialization."""
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 class JobTracker:
     """Tracks job status in GCS for monitoring."""
@@ -25,17 +32,17 @@ class JobTracker:
         self.job_id = job_id
         self.status_path = f"jobs/{job_id}/status.json"
     
-    def update_status(self, status: str, details: Optional[Dict[str, Any]] = None):
+    def update_status(self, status: JobStatus, details: Optional[Dict[str, Any]] = None):
         """
         Updates job status in GCS.
         
         Args:
-            status: Job status ('queued', 'processing', 'completed', 'failed')
+            status: Job status enum
             details: Optional additional details
         """
         data = {
             "job_id": self.job_id,
-            "status": status,
+            "status": str(status),
             "updated_at": datetime.utcnow().isoformat(),
             "details": details or {}
         }
@@ -51,11 +58,11 @@ class JobTracker:
     
     def mark_queued(self, total_chapters: int):
         """Mark job as queued."""
-        self.update_status("queued", {"total_chapters": total_chapters})
+        self.update_status(JobStatus.QUEUED, {"total_chapters": total_chapters})
     
     def mark_processing(self, current_chapter: int, total_chapters: int):
         """Mark job as processing."""
-        self.update_status("processing", {
+        self.update_status(JobStatus.PROCESSING, {
             "current_chapter": current_chapter,
             "total_chapters": total_chapters,
             "progress": f"{current_chapter}/{total_chapters}"
@@ -63,7 +70,7 @@ class JobTracker:
     
     def mark_completed(self, gcs_uri: str):
         """Mark job as completed."""
-        self.update_status("completed", {"gcs_uri": gcs_uri})
+        self.update_status(JobStatus.COMPLETED, {"gcs_uri": gcs_uri})
     
     def mark_failed(self, error: str, stage: Optional[str] = None):
         """
@@ -77,7 +84,7 @@ class JobTracker:
         if stage:
             details["stage"] = stage
         
-        self.update_status("failed", details)
+        self.update_status(JobStatus.FAILED, details)
     
     def get_status(self) -> Optional[Dict[str, Any]]:
         """

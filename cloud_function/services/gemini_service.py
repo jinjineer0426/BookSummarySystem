@@ -6,7 +6,7 @@ import ssl
 import sys
 import google.generativeai as genai
 from typing import Optional, Dict, Any, List
-from config import GEMINI_API_KEY
+from config import GEMINI_API_KEY, get_config_value
 
 from services.logging_service import get_logger
 
@@ -19,8 +19,12 @@ class GeminiService:
             raise ValueError("GEMINI_API_KEY is not set.")
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-            # Use gemini-2.5-flash for higher quota limits
-            self.model_name = 'gemini-2.5-flash'
+            # Fetch model name from config (GCS > Env > Default)
+            self.model_name = get_config_value(
+                "gemini.model_id",
+                "GEMINI_MODEL_ID",
+                "gemini-2.5-flash"
+            )
             self.embedding_model = "models/text-embedding-004"
             logger.debug(f"GeminiService initialized with model {self.model_name}")
         except Exception as e:
