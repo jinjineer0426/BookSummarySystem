@@ -107,8 +107,8 @@ function syncCompletedJobs() {
 
     if (fileIdMap.has(fileId)) {
       const rowIndex = fileIdMap.get(fileId);
-      updateRowInSheet(sheet, rowIndex, metadata, completedDate);
-      updatedCount++;
+      updateRowInSheet(sheet, rowIndex, metadata, completedDate, statusData);
+      updatedCount++;;
     } else {
       appendJobToSheet(sheet, jobId, metadata);
       syncedCount++;
@@ -220,19 +220,30 @@ function listRecentMetadataObjects(hours) {
 /**
  * Helper to update an existing row in the log sheet.
  */
-function updateRowInSheet(sheet, rowIndex, metadata, completedDate) {
+function updateRowInSheet(sheet, rowIndex, metadata, completedDate, statusData) {
   // Column D: Processed Date
   sheet.getRange(rowIndex, 4).setValue(completedDate);
   // Column E: Generated Title
   sheet.getRange(rowIndex, 5).setValue(metadata.book_title || 'Unknown');
   // Column F: Author
   if (metadata.author) sheet.getRange(rowIndex, 6).setValue(metadata.author);
-  // Column G: Concepts
-  if (metadata.concepts) sheet.getRange(rowIndex, 7).setValue(metadata.concepts.join(', '));
-  // Column H: New Concepts
-  if (metadata.newConcepts) sheet.getRange(rowIndex, 8).setValue(metadata.newConcepts.join(', '));
-  // Column I: GCS URI
-  if (metadata.output_uri) sheet.getRange(rowIndex, 9).setValue(metadata.output_uri);
+  
+  // Column G: Status - set to Complete (we only call this for complete jobs)
+  sheet.getRange(rowIndex, 7).setValue('Complete');
+  
+  // Column H: Concepts
+  if (metadata.concepts) sheet.getRange(rowIndex, 8).setValue(metadata.concepts.join(', '));
+  // Column I: New Concepts
+  if (metadata.newConcepts) sheet.getRange(rowIndex, 9).setValue(metadata.newConcepts.join(', '));
+  
+  // Column J: GCS URI - get from status.json details.gcs_uri OR metadata.output_uri
+  const gcsUri = (statusData && statusData.details && statusData.details.gcs_uri) 
+               || metadata.output_uri 
+               || metadata.gcs_uri 
+               || '';
+  if (gcsUri) {
+    sheet.getRange(rowIndex, 10).setValue(gcsUri);
+  }
 }
 
 
@@ -324,9 +335,10 @@ function appendJobToSheet(sheet, jobId, metadata) {
     metadata.completed_at ? new Date(metadata.completed_at) : new Date(), // D: Processed Date
     title,                               // E: Generated Title
     metadata.author || '',               // F: Author
-    (metadata.concepts || []).join(', '),// G: Concepts
-    (metadata.newConcepts || []).join(', '), // H: New Concepts
-    metadata.output_uri || ''            // I: GCS URI
+    'Complete',                          // G: Status
+    (metadata.concepts || []).join(', '),// H: Concepts
+    (metadata.newConcepts || []).join(', '), // I: New Concepts
+    metadata.output_uri || ''            // J: GCS URI
   ];
   
   sheet.appendRow(row);
@@ -352,229 +364,135 @@ function setupSyncTrigger() {
   console.log('Sync trigger set up: syncCompletedJobs daily at 2 AM.');
 }
 
-/**
- * Manual test function.
- */
-function testSync() {
-  const count = syncCompletedJobs();
-  console.log(`Test sync completed. Synced ${count} jobs.`);
-}
+// === Job Cleanup ===
+// Handled by Cloud Run /cleanup_jobs endpoint.
+// Use Cloud Scheduler to trigger it periodically.
 
-// === Job Cleanup Functions ===
+
+// === Obsidian Bucket Sync ===
 
 /**
- * Cleans up old job folders from GCS.
- * - Completed jobs: deleted after 7 days
- * - Failed jobs: deleted after 3 days
+ * Sync sheet entries by checking Obsidian bucket for existing summary files.
+ * This is useful when job metadata is missing but summary files exist.
  * 
- * Run manually or set up as a weekly trigger.
+ * Logic:
+ * 1. List all .md files in Obsidian bucket's 01_Reading/ folder
+ * 2. For each sheet row that is not Complete, try to match by title
+ * 3. If a matching .md file exists, update Status to Complete and set GCS URI
  */
-function cleanupOldJobs() {
-  const CONFIG = getGcsConfig_();
+function syncFromObsidianBucket() {
+  const sheet = getLogSheet();
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow <= 1) {
+    console.log('No data rows in sheet');
+    return;
+  }
+  
+  console.log('=== Syncing from Obsidian Bucket ===');
+  
+  // Get Obsidian bucket config
+  const configService = new ConfigService();
+  const config = configService.getConfig();
+  const obsidianBucket = config.clip_processor?.gcs_bucket || 'obsidian_vault_sync_my_knowledge';
+  const readingPath = '01_Reading/';
+  
+  console.log(`Scanning bucket: ${obsidianBucket}/${readingPath}`);
+  
+  // List all .md files in Obsidian bucket
   const accessToken = ScriptApp.getOAuthToken();
+  const listUrl = `https://storage.googleapis.com/storage/v1/b/${obsidianBucket}/o?prefix=${encodeURIComponent(readingPath)}`;
   
-  console.log('Starting job cleanup...');
-  
-  // List all objects in jobs/ prefix
-  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o?prefix=jobs/`;
-  const response = UrlFetchApp.fetch(url, {
+  const response = UrlFetchApp.fetch(listUrl, {
     headers: { 'Authorization': `Bearer ${accessToken}` },
     muteHttpExceptions: true
   });
   
   if (response.getResponseCode() !== 200) {
-    console.error('Failed to list jobs:', response.getContentText());
+    console.error('Failed to list Obsidian bucket:', response.getContentText());
     return;
   }
   
   const data = JSON.parse(response.getContentText());
   const items = data.items || [];
   
-  // Group objects by jobId
-  const jobObjects = new Map();
-  for (const obj of items) {
-    const parts = obj.name.split('/');
-    if (parts.length >= 2 && parts[1]) {
-      const jobId = parts[1];
-      if (!jobObjects.has(jobId)) {
-        jobObjects.set(jobId, []);
-      }
-      jobObjects.get(jobId).push(obj.name);
-    }
+  // Build a map of normalized file names to GCS URIs
+  const obsidianFiles = new Map();
+  for (const item of items) {
+    if (!item.name.endsWith('.md')) continue;
+    
+    // Extract just the filename without path and extension
+    const fileName = item.name.replace(readingPath, '').replace('.md', '');
+    const normalizedName = normalizeTitle(fileName);
+    const gcsUri = `gs://${obsidianBucket}/${item.name}`;
+    
+    obsidianFiles.set(normalizedName, gcsUri);
   }
   
-  console.log(`Found ${jobObjects.size} job folders in GCS`);
+  console.log(`Found ${obsidianFiles.size} .md files in Obsidian bucket`);
   
-  const now = new Date();
-  const COMPLETED_RETENTION_DAYS = 7;
-  const FAILED_RETENTION_DAYS = 3;
+  // Read sheet data (columns A-J)
+  const dataRange = sheet.getRange(2, 1, lastRow - 1, 10);
+  const sheetData = dataRange.getValues();
   
-  let deletedCount = 0;
-  let skippedCount = 0;
+  let updatedCount = 0;
   
-  for (const [jobId, objectNames] of jobObjects) {
-    const metadata = readJobMetadata(jobId);
-    const statusData = readJobStatus(jobId);
+  for (let i = 0; i < sheetData.length; i++) {
+    const row = sheetData[i];
+    const currentStatus = row[6]; // Column G: Status
+    const currentUri = row[9];    // Column J: GCS URI
     
-    if (!metadata) {
-      skippedCount++;
+    // Skip if already Complete with valid GCS URI
+    if (currentStatus === 'Complete' && currentUri && String(currentUri).startsWith('gs://')) {
       continue;
     }
     
-    // Determine status
-    const effectiveStatus = (statusData && statusData.status) 
-      ? statusData.status 
-      : (metadata.status || 'unknown');
+    // Try to match by Generated Title (Column E) or File Name (Column B)
+    const generatedTitle = String(row[4] || '').replace('.pdf', '');
+    const fileName = String(row[1] || '').replace('.pdf', '');
     
-    // Determine last update time
-    let updatedAt = null;
-    if (statusData && statusData.updated_at) {
-      updatedAt = new Date(statusData.updated_at);
-    } else if (metadata.completed_at) {
-      updatedAt = new Date(metadata.completed_at);
-    } else if (metadata.created_at) {
-      updatedAt = new Date(metadata.created_at);
-    }
+    const normalizedGenTitle = normalizeTitle(generatedTitle);
+    const normalizedFileName = normalizeTitle(fileName);
     
-    if (!updatedAt) {
-      skippedCount++;
-      continue;
-    }
+    let matchedUri = null;
     
-    const daysSinceUpdate = (now - updatedAt) / (1000 * 60 * 60 * 24);
-    
-    let shouldDelete = false;
-    let reason = '';
-    
-    if ((effectiveStatus === 'complete' || effectiveStatus === 'completed') 
-        && daysSinceUpdate > COMPLETED_RETENTION_DAYS) {
-      shouldDelete = true;
-      reason = `completed ${Math.floor(daysSinceUpdate)} days ago`;
-    } else if (effectiveStatus === 'failed' && daysSinceUpdate > FAILED_RETENTION_DAYS) {
-      shouldDelete = true;
-      reason = `failed ${Math.floor(daysSinceUpdate)} days ago`;
-    }
-    
-    if (shouldDelete) {
-      const title = metadata.book_title || jobId;
-      console.log(`Deleting: ${title} (${reason})`);
-      deleteJobFolder_(objectNames);
-      deletedCount++;
-    }
-  }
-  
-  console.log('');
-  console.log('=== Cleanup Summary ===');
-  console.log(`Deleted: ${deletedCount} old job folders`);
-  console.log(`Skipped: ${skippedCount} (no metadata or timestamp)`);
-  console.log('Cleanup complete.');
-}
-
-/**
- * Deletes all objects in a job folder.
- * @private
- */
-function deleteJobFolder_(objectNames) {
-  const CONFIG = getGcsConfig_();
-  const accessToken = ScriptApp.getOAuthToken();
-  
-  for (const objectName of objectNames) {
-    const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o/${encodeURIComponent(objectName)}`;
-    try {
-      UrlFetchApp.fetch(url, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${accessToken}` },
-        muteHttpExceptions: true
-      });
-    } catch (e) {
-      console.error(`Failed to delete ${objectName}: ${e}`);
-    }
-  }
-}
-
-/**
- * Dry run - shows what would be deleted without actually deleting.
- */
-function previewCleanup() {
-  const CONFIG = getGcsConfig_();
-  const accessToken = ScriptApp.getOAuthToken();
-  
-  console.log('=== Cleanup Preview (Dry Run) ===');
-  console.log('');
-  
-  const url = `https://storage.googleapis.com/storage/v1/b/${CONFIG.GCS_BUCKET}/o?prefix=jobs/`;
-  const response = UrlFetchApp.fetch(url, {
-    headers: { 'Authorization': `Bearer ${accessToken}` },
-    muteHttpExceptions: true
-  });
-  
-  if (response.getResponseCode() !== 200) {
-    console.error('Failed to list jobs');
-    return;
-  }
-  
-  const data = JSON.parse(response.getContentText());
-  const items = data.items || [];
-  
-  // Extract unique job IDs
-  const jobIds = new Set();
-  for (const obj of items) {
-    const parts = obj.name.split('/');
-    if (parts.length >= 2 && parts[1]) {
-      jobIds.add(parts[1]);
-    }
-  }
-  
-  const now = new Date();
-  const toDelete = [];
-  const toKeep = [];
-  
-  for (const jobId of jobIds) {
-    const metadata = readJobMetadata(jobId);
-    const statusData = readJobStatus(jobId);
-    
-    if (!metadata) continue;
-    
-    const effectiveStatus = (statusData && statusData.status) 
-      ? statusData.status 
-      : (metadata.status || 'unknown');
-    
-    let updatedAt = null;
-    if (statusData && statusData.updated_at) {
-      updatedAt = new Date(statusData.updated_at);
-    } else if (metadata.completed_at) {
-      updatedAt = new Date(metadata.completed_at);
-    }
-    
-    if (!updatedAt) continue;
-    
-    const daysSinceUpdate = (now - updatedAt) / (1000 * 60 * 60 * 24);
-    const title = metadata.book_title || jobId;
-    
-    if ((effectiveStatus === 'complete' || effectiveStatus === 'completed') && daysSinceUpdate > 7) {
-      toDelete.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
-    } else if (effectiveStatus === 'failed' && daysSinceUpdate > 3) {
-      toDelete.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
+    // Try exact match first
+    if (obsidianFiles.has(normalizedGenTitle)) {
+      matchedUri = obsidianFiles.get(normalizedGenTitle);
+    } else if (obsidianFiles.has(normalizedFileName)) {
+      matchedUri = obsidianFiles.get(normalizedFileName);
     } else {
-      toKeep.push(`${title} (${effectiveStatus}, ${Math.floor(daysSinceUpdate)}d)`);
+      // Try partial match - check if any obsidian file contains the title
+      for (const [obsName, obsUri] of obsidianFiles) {
+        if (obsName.includes(normalizedGenTitle) || normalizedGenTitle.includes(obsName) ||
+            obsName.includes(normalizedFileName) || normalizedFileName.includes(obsName)) {
+          matchedUri = obsUri;
+          break;
+        }
+      }
     }
-  }
-  
-  console.log('Would DELETE:');
-  if (toDelete.length === 0) {
-    console.log('  (none)');
-  } else {
-    for (const item of toDelete) {
-      console.log(`  - ${item}`);
+    
+    if (matchedUri) {
+      const rowIndex = i + 2; // Sheet rows are 1-indexed, data starts at row 2
+      sheet.getRange(rowIndex, 7).setValue('Complete');  // Column G: Status
+      sheet.getRange(rowIndex, 10).setValue(matchedUri); // Column J: GCS URI
+      updatedCount++;
+      console.log(`Updated: ${generatedTitle || fileName} -> Complete`);
     }
   }
   
   console.log('');
-  console.log('Would KEEP:');
-  for (const item of toKeep) {
-    console.log(`  - ${item}`);
-  }
-  
-  console.log('');
-  console.log(`Summary: ${toDelete.length} to delete, ${toKeep.length} to keep`);
+  console.log(`=== Sync Complete ===`);
+  console.log(`Updated ${updatedCount} entries to Complete`);
+}
+
+/**
+ * Normalize title for matching (remove special chars, lowercase, trim)
+ */
+function normalizeTitle(title) {
+  return String(title || '')
+    .toLowerCase()
+    .replace(/[_\-\s]+/g, '')  // Remove underscores, hyphens, spaces
+    .replace(/[^\w\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/g, '')  // Keep alphanumeric and Japanese
+    .trim();
 }

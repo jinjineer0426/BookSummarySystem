@@ -459,18 +459,7 @@ function classifyAndPairPdfs(pdfList) {
   return { pairs: pairs, standalones: standalones };
 }
 
-function getOrCreateFolder(parent, name) {
-  const folders = parent.getFoldersByName(name);
-  if (folders.hasNext()) {
-    return folders.next();
-  }
-  return parent.createFolder(name);
-}
 
-// 互換性のため残す
-function identifyPdfType(filename) {
-  return 'unknown'; 
-}
 
 /**
  * Geminiで表紙PDFを分析する

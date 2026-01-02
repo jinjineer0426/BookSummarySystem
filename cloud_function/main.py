@@ -17,7 +17,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 import functions_framework
@@ -74,6 +74,8 @@ def main_http_entry(request):
         return process_gcs_inbox(request)
     elif path.endswith("/analyze_concepts"):
         return analyze_concepts(request)
+    elif path.endswith("/cleanup_jobs"):
+        return cleanup_jobs(request)
     else:
         return json.dumps({"error": f"Path {path} not found"}), 404
 
@@ -454,6 +456,94 @@ def analyze_concepts(request):
         
     except Exception as e:
         print(f"Error in analyze_concepts: {e}")
+        import traceback
+        traceback.print_exc()
+        return json.dumps({"status": "error", "message": str(e)}), 500
+
+
+@functions_framework.http
+def cleanup_jobs(request):
+    """
+    Cleans up old job folders from GCS.
+    - Completed jobs: deleted after 7 days
+    - Failed jobs: deleted after 3 days
+    """
+    try:
+        gcs = GcsService()
+        bucket = gcs.bucket
+        
+        # List all objects in jobs/
+        blobs = list(bucket.list_blobs(prefix="jobs/"))
+        
+        # Group by jobId
+        jobs = {}
+        for blob in blobs:
+            parts = blob.name.split("/")
+            if len(parts) >= 2 and parts[1]:
+                job_id = parts[1]
+                if job_id not in jobs:
+                    jobs[job_id] = []
+                jobs[job_id].append(blob)
+        
+        now = datetime.now(timezone.utc)
+        deleted_count = 0
+        
+        for job_id, job_blobs in jobs.items():
+            # Try to get metadata.json
+            metadata_blob = next((b for b in job_blobs if b.name.endswith("metadata.json")), None)
+            status_blob = next((b for b in job_blobs if b.name.endswith("status.json")), None)
+            
+            if not metadata_blob:
+                continue
+                
+            try:
+                metadata = json.loads(metadata_blob.download_as_text())
+                status_data = None
+                if status_blob:
+                    status_data = json.loads(status_blob.download_as_text())
+                
+                # Determine status
+                effective_status = (status_data.get("status") if status_data and status_data.get("status") 
+                                 else metadata.get("status", "unknown"))
+                
+                # Determine last update time
+                updated_at_str = (status_data.get("updated_at") if status_data and status_data.get("updated_at")
+                                 else metadata.get("completed_at") or metadata.get("created_at"))
+                
+                if not updated_at_str:
+                    continue
+                
+                # Parse datetime (handling ISO format)
+                # handle formats like 2023-10-27T10:00:00Z or 2023-10-27T10:00:00.000000
+                if updated_at_str.endswith('Z'):
+                    updated_at_str = updated_at_str[:-1] + '+00:00'
+                
+                updated_at = datetime.fromisoformat(updated_at_str)
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                
+                days_since_update = (now - updated_at).days
+                
+                should_delete = False
+                if effective_status in ['complete', 'completed', 'success'] and days_since_update > 7:
+                    should_delete = True
+                elif effective_status == 'failed' and days_since_update > 3:
+                    should_delete = True
+                
+                if should_delete:
+                    # Delete all blobs in this job folder
+                    for blob in job_blobs:
+                        blob.delete()
+                    deleted_count += 1
+                    print(f"Deleted job folder: {job_id} ({effective_status}, {days_since_update} days old)")
+                    
+            except Exception as e:
+                print(f"Error checking job {job_id}: {e}")
+                
+        return json.dumps({"status": "success", "deleted_jobs": deleted_count}), 200
+        
+    except Exception as e:
+        print(f"Error in cleanup_jobs: {e}")
         import traceback
         traceback.print_exc()
         return json.dumps({"status": "error", "message": str(e)}), 500
