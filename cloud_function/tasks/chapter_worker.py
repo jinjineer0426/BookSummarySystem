@@ -77,8 +77,7 @@ def process_chapter(request):
         # 3. Save result to GCS
         _save_chapter_result(gcs, job_id, chapter_number, summary_result, logger)
         
-        # 4. Update job status
-        _update_job_progress(gcs, job_id, chapter_number, logger)
+        # Note: Progress tracking now done via chapter_N.json file existence (checked by finalizer)
         
         logger.log_stage("chapter_processing", "completed", chapter_number=chapter_number)
         
@@ -168,20 +167,4 @@ def _save_chapter_result(gcs: GcsService, job_id: str, chapter_number: int, resu
     logger.logger.debug(f"Saved chapter {chapter_number} result to GCS")
 
 
-def _update_job_progress(gcs: GcsService, job_id: str, chapter_number: int, logger: JobLogger):
-    """Updates the job metadata to track progress."""
-    metadata_blob = gcs.bucket.blob(f"jobs/{job_id}/metadata.json")
-    
-    if metadata_blob.exists():
-        metadata = json.loads(metadata_blob.download_as_text())
-    else:
-        metadata = {"completed_chapters": []}
-    
-    if chapter_number not in metadata.get("completed_chapters", []):
-        metadata.setdefault("completed_chapters", []).append(chapter_number)
-    
-    metadata_blob.upload_from_string(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        content_type="application/json"
-    )
-    logger.logger.debug(f"Updated job {job_id} progress: {len(metadata['completed_chapters'])} chapters done")
+

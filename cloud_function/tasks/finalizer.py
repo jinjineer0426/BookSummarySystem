@@ -61,11 +61,17 @@ def finalize_book(request):
             return json.dumps({"error": "Job not found"}), 404
         
         total_chapters = metadata.get("total_chapters", 0)
-        completed_chapters = metadata.get("completed_chapters", [])
         
-        if len(completed_chapters) < total_chapters:
+        # Check completion by counting existing chapter result files
+        # This avoids race conditions from concurrent metadata.json updates
+        completed_count = sum(
+            1 for i in range(total_chapters)
+            if gcs.bucket.blob(f"jobs/{job_id}/chapter_{i}.json").exists()
+        )
+        
+        if completed_count < total_chapters:
             return json.dumps({
-                "message": f"Waiting for chapters: {len(completed_chapters)}/{total_chapters} complete"
+                "message": f"Waiting for chapters: {completed_count}/{total_chapters} complete"
             }), 429
         
         # 2. Read all chapter results
