@@ -31,22 +31,38 @@ class GeminiService:
             logger.error(f"Failed to configure genai: {e}")
             raise
 
-    def generate_content(self, content: Any, max_retries: int = 3, model_name: Optional[str] = None) -> Optional[Dict]:
+    def generate_content(
+        self, 
+        content: Any, 
+        max_retries: int = 3, 
+        model_name: Optional[str] = None,
+        response_schema: Optional[Any] = None
+    ) -> Optional[Dict]:
         """Call Gemini with retry logic."""
         target_model_name = model_name if model_name else self.model_name
         logger = get_logger()
         
         logger.debug(f"generate_content for model {target_model_name}")
         
+        
+        gen_config_args = {
+            "temperature": 0.2,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+            "response_mime_type": "application/json",
+        }
+        
+        if response_schema:
+            gen_config_args["response_schema"] = response_schema
+            
+        generation_config = genai.types.GenerationConfig(**gen_config_args)
+        
+        logger.debug(f"Generation Config: {generation_config}")
+        
         model = genai.GenerativeModel(
             model_name=target_model_name,
-            generation_config={
-                "temperature": 0.2,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 8192,
-                "response_mime_type": "application/json",
-            },
+            generation_config=generation_config,
             safety_settings=[
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -76,6 +92,21 @@ class GeminiService:
                     cleaned_text = re.sub(r"\s*```$", "", cleaned_text)
                 
                 return json.loads(cleaned_text)
+                
+            except json.JSONDecodeError as e:
+                finish_reason = "Unknown"
+                if response.candidates:
+                    finish_reason = response.candidates[0].finish_reason.name
+                
+                logger.error(f"JSON Parse Error (attempt {attempt+1}). Finish Reason: {finish_reason}. Error: {e}")
+                
+                # Log a truncated version of the raw text to avoid spamming massive logs
+                raw_preview = response.text[:1000] + "..." if len(response.text) > 1000 else response.text
+                logger.error(f"Raw Response Preview: {raw_preview}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+                continue
                 
             except Exception as e:
                 error_str = str(e)

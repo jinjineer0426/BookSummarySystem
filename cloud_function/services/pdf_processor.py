@@ -83,7 +83,9 @@ class PdfProcessor:
         """
         # Primary pattern - strict matching with separators
         # Matches: 第1部, 第一章, Chapter 1, Part I, etc.
-        primary_pattern = r'(?:^|[\n\r]+)\s*(?:第\s*([0-9０-９一二三四五六七八九十百壱弐参]+)\s*[部章編節]|(?:Chapter|CHAPTER|Part|PART|パート)\s*([0-9０-９IVXivx]+))[　\s:：\-−—.．]*([^\n\r]{0,80})'
+        # Changed to Positive Lookahead (?=[\s　\n\r:：\.．]) to REQUIRE a separator after the logic type.
+        # This excludes "第三部隊" (followed by 隊), "第一部は" (followed by は), etc.
+        primary_pattern = r'(?:^|[\n\r]+)\s*(?:第\s*([0-9０-９一二三四五六七八九十百壱弐参]+)\s*[部章編節](?=[\s　\n\r:：\.．])|(?:Chapter|CHAPTER|Part|PART|パート)\s*([0-9０-９IVXivx]+))[　\s:：\-−—.．]*([^\n\r]{0,80})'
         
         matches = list(re.finditer(primary_pattern, text, re.IGNORECASE))
         logger = get_logger()
@@ -95,7 +97,8 @@ class PdfProcessor:
         if len(matches) <= 1:
             logger.warning("Only 0-1 chapters detected. Trying fallback pattern...")
             # More lenient pattern - just looks for 第X部 or 第X章 anywhere
-            fallback_pattern = r'第\s*[0-9０-９一二三四五六七八九十壱弐参]+\s*[部章]'
+            # Added Positive Lookahead here too
+            fallback_pattern = r'第\s*[0-9０-９一二三四五六七八九十壱弐参]+\s*[部章](?=[\s　\n\r:：\.．])'
             fallback_positions = [(m.start(), m.group()) for m in re.finditer(fallback_pattern, text)]
             logger.debug(f"  Fallback pattern found {len(fallback_positions)} matches")
             
@@ -351,10 +354,38 @@ class PdfProcessor:
             
             content = [prompt] + images
             
-            # Use configurable model
+            # Define Schema for robust JSON generation
+            toc_schema = {
+                "type": "object",
+                "properties": {
+                    "volume_info": {"type": "string"},
+                    "has_toc_page": {"type": "boolean"},
+                    "toc_page_numbers": {
+                        "type": "array",
+                        "items": {"type": "integer"}
+                    },
+                    "chapters_in_this_volume": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "number": {"type": "string"},
+                                "title": {"type": "string"},
+                                "content_start_page": {"type": "integer"}
+                            },
+                            "required": ["number", "title", "content_start_page"]
+                        }
+                    }
+                },
+                "required": ["has_toc_page", "chapters_in_this_volume"]
+            }
+
+            # Use configurable model with enforced schema
             result = gemini_service.generate_content(
                 content, 
-                model_name=TOC_EXTRACTION_MODEL
+                model_name=TOC_EXTRACTION_MODEL,
+                # Note: google-generativeai >= 0.5.0 supports response_schema
+                response_schema=toc_schema
             )
             
             if not result:
