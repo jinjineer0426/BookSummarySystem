@@ -1,0 +1,14 @@
+steps:
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'process-book'
+      - '--source=cloud_function'
+      - '--region=asia-northeast1'
+      - '--allow-unauthenticated'
+      - '--project=gen-lang-client-0341760389'
+options:
+  logging: CLOUD_LOGGING_ONLY
